@@ -1,0 +1,7 @@
+project_id = "nxxggvpcuzwmneopqlkj"
+
+[functions.create-checkout-preference]
+verify_jwt = false
+
+[functions.mercado-pago-webhook]
+verify_jwt = false

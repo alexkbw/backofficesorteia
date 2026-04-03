@@ -1,0 +1,3 @@
+-- Placeholder for the remote baseline migration already applied in Supabase.
+-- This keeps local migration history aligned with the linked project without
+-- attempting to replay an unknown older migration in this repository.
