@@ -1,7 +1,10 @@
-project_id = "nxxggvpcuzwmneopqlkj"
+project_id = "vpwhknwmotwdvevlkkpn"
 
 [functions.create-checkout-preference]
 verify_jwt = false
 
 [functions.mercado-pago-webhook]
+verify_jwt = false
+
+[functions.federal-latest-result]
 verify_jwt = false

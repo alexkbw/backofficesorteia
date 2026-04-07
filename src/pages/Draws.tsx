@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import { CalendarDays, Plus, Sparkles, Ticket, Trophy } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { CalendarDays, Plus, Sparkles, Ticket, Trophy } from "lucide-react";
 import { toast } from "sonner";
 
-import LiveDrawDialog from "@/components/LiveDrawDialog";
+import LiveDrawDialog, {
+  type DrawExecutionInput,
+  type DrawExecutionResult,
+} from "@/components/LiveDrawDialog";
 import PageHeader from "@/components/PageHeader";
 import StatusBadge from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -22,29 +25,43 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/externalClient";
 import {
-  buildQueueEntries,
+  buildTicketEntries,
   calculateDrawFinancials,
-  DEFAULT_WINNER_COUNT,
+  deriveFederalWinningNumber,
+  findClosestWinningTicket,
+  formatTicketNumber,
+  getDrawContestCode,
+  getPaymentContestCode,
   getProfileKey,
-  getPromotionAmount,
+  getPromotionContestCode,
+  getPromotionNumberContestCode,
+  isApprovedPayment,
   isPromotionActive,
   type DrawRecord,
   type PaymentRecord,
   type ProfileRecord,
+  type PromotionNumberRecord,
   type PromotionRecord,
-  type QueueEntry,
-  pickUniqueQueuePositions,
+  type TicketEntry,
 } from "@/lib/raffle";
 
-type DrawExecutionResult = {
-  executedAt: string;
-  platformCut: number;
-  prizePerWinner: number;
-  prizePool: number;
-  totalPot: number;
-  winnerPositions: number[];
-  winners: QueueEntry[];
-};
+const DEFAULT_RESULT_SOURCE = "manual";
+const DEFAULT_WINNER_COUNT = 1;
+
+function formatContestLabel(contestCode?: string | null) {
+  const normalized = contestCode?.trim();
+  return normalized ? `Concurso ${normalized}` : "Concurso sem identificador";
+}
+
+function summarizePromotionTitles(promotions: PromotionRecord[]) {
+  const titles = promotions.map((promotion) => promotion.title.trim()).filter(Boolean);
+
+  if (titles.length <= 2) {
+    return titles.join(", ");
+  }
+
+  return `${titles.slice(0, 2).join(", ")} +${titles.length - 2}`;
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("pt-BR", {
@@ -70,13 +87,15 @@ export default function Draws() {
   const [promotions, setPromotions] = useState<PromotionRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
+  const [promotionNumbers, setPromotionNumbers] = useState<PromotionNumberRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [drawSceneOpen, setDrawSceneOpen] = useState(false);
-  const [selectedPromotionId, setSelectedPromotionId] = useState("");
+  const [selectedContestCode, setSelectedContestCode] = useState("");
   const [selectedDrawId, setSelectedDrawId] = useState<string | null>(null);
   const [newDate, setNewDate] = useState("");
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isResolvingClosestWinner, setIsResolvingClosestWinner] = useState(false);
   const [executionResult, setExecutionResult] = useState<DrawExecutionResult | null>(null);
 
   const loadData = async () => {
@@ -84,14 +103,21 @@ export default function Draws() {
       setLoading(true);
     }
 
-    const [drawsResponse, promotionsResponse, paymentsResponse, profilesResponse] = await Promise.all([
+    const [drawsResponse, promotionsResponse, paymentsResponse, profilesResponse, numbersResponse] = await Promise.all([
       getTable("draws").select("*").order("draw_date", { ascending: false }),
       getTable("promotions").select("*").order("created_at", { ascending: false }),
       getTable("payments").select("*").order("created_at", { ascending: false }),
       getTable("profiles").select("*").order("created_at", { ascending: false }),
+      getTable("promotion_numbers").select("*").order("ticket_number", { ascending: true }),
     ]);
 
-    if (drawsResponse.error || promotionsResponse.error || paymentsResponse.error || profilesResponse.error) {
+    if (
+      drawsResponse.error ||
+      promotionsResponse.error ||
+      paymentsResponse.error ||
+      profilesResponse.error ||
+      numbersResponse.error
+    ) {
       toast.error("Nao foi possivel carregar o fluxo de sorteios agora.");
       setLoading(false);
       return;
@@ -101,6 +127,7 @@ export default function Draws() {
     setPromotions((promotionsResponse.data ?? []) as PromotionRecord[]);
     setPayments((paymentsResponse.data ?? []) as PaymentRecord[]);
     setProfiles((profilesResponse.data ?? []) as ProfileRecord[]);
+    setPromotionNumbers((numbersResponse.data ?? []) as PromotionNumberRecord[]);
     setLoading(false);
   };
 
@@ -112,6 +139,29 @@ export default function Draws() {
     return new Map(promotions.map((promotion) => [promotion.id, promotion]));
   }, [promotions]);
 
+  const promotionsByContestCode = useMemo(() => {
+    const map = new Map<string, PromotionRecord[]>();
+
+    for (const promotion of promotions) {
+      const contestCode = getPromotionContestCode(promotion);
+
+      if (!contestCode) {
+        continue;
+      }
+
+      const current = map.get(contestCode) ?? [];
+      current.push(promotion);
+      current.sort((left, right) => left.title.localeCompare(right.title));
+      map.set(contestCode, current);
+    }
+
+    return map;
+  }, [promotions]);
+
+  const paymentsById = useMemo(() => {
+    return new Map(payments.map((payment) => [payment.id, payment]));
+  }, [payments]);
+
   const profilesByUserId = useMemo(() => {
     return new Map(
       profiles
@@ -120,43 +170,86 @@ export default function Draws() {
     );
   }, [profiles]);
 
-  const queueByPromotionId = useMemo(() => {
-    const map = new Map<string, QueueEntry[]>();
+  const paidPaymentsByContestCode = useMemo(() => {
+    const map = new Map<string, PaymentRecord[]>();
 
-    for (const promotion of promotions) {
-      const promotionPayments = payments.filter((payment) => payment.promotion_id === promotion.id);
-      map.set(promotion.id, buildQueueEntries(promotionPayments, profilesByUserId));
-    }
-
-    return map;
-  }, [payments, profilesByUserId, promotions]);
-
-  const drawsByPromotionId = useMemo(() => {
-    const map = new Map<string, DrawRecord[]>();
-
-    for (const draw of draws) {
-      if (!draw.promotion_id) {
+    for (const payment of payments) {
+      if (!isApprovedPayment(payment)) {
         continue;
       }
 
-      const current = map.get(draw.promotion_id) ?? [];
+      const contestCode = getPaymentContestCode(payment, promotionById);
+
+      if (!contestCode) {
+        continue;
+      }
+
+      const current = map.get(contestCode) ?? [];
+      current.push(payment);
+      map.set(contestCode, current);
+    }
+
+    return map;
+  }, [payments, promotionById]);
+
+  const ticketsByContestCode = useMemo(() => {
+    const groupedNumbers = new Map<string, PromotionNumberRecord[]>();
+
+    for (const promotionNumber of promotionNumbers) {
+      const contestCode = getPromotionNumberContestCode(promotionNumber, promotionById);
+
+      if (!contestCode) {
+        continue;
+      }
+
+      const current = groupedNumbers.get(contestCode) ?? [];
+      current.push(promotionNumber);
+      groupedNumbers.set(contestCode, current);
+    }
+
+    const map = new Map<string, TicketEntry[]>();
+
+    for (const [contestCode, numbersForContest] of groupedNumbers.entries()) {
+      map.set(contestCode, buildTicketEntries(numbersForContest, paymentsById, profilesByUserId));
+    }
+
+    return map;
+  }, [paymentsById, profilesByUserId, promotionById, promotionNumbers]);
+
+  const drawsByContestCode = useMemo(() => {
+    const map = new Map<string, DrawRecord[]>();
+
+    for (const draw of draws) {
+      const contestCode = getDrawContestCode(draw);
+
+      if (!contestCode) {
+        continue;
+      }
+
+      const current = map.get(contestCode) ?? [];
       current.push(draw);
       current.sort((left, right) => new Date(left.draw_date).getTime() - new Date(right.draw_date).getTime());
-      map.set(draw.promotion_id, current);
+      map.set(contestCode, current);
     }
 
     return map;
   }, [draws]);
 
-  const availablePromotions = useMemo(() => {
-    return promotions.filter(isPromotionActive);
-  }, [promotions]);
+  const availableContests = useMemo(() => {
+    return Array.from(promotionsByContestCode.entries())
+      .filter(([, contestPromotions]) => contestPromotions.some(isPromotionActive))
+      .map(([contestCode, contestPromotions]) => ({
+        contestCode,
+        draws: drawsByContestCode.get(contestCode) ?? [],
+        promotions: contestPromotions,
+      }))
+      .sort((left, right) => left.contestCode.localeCompare(right.contestCode, "pt-BR", { numeric: true }));
+  }, [drawsByContestCode, promotionsByContestCode]);
 
   const selectedDraw = selectedDrawId ? draws.find((draw) => draw.id === selectedDrawId) ?? null : null;
-  const selectedPromotion = selectedDraw?.promotion_id
-    ? promotionById.get(selectedDraw.promotion_id) ?? null
-    : null;
-  const selectedQueue = selectedPromotion ? queueByPromotionId.get(selectedPromotion.id) ?? [] : [];
+  const selectedDrawContestCode = getDrawContestCode(selectedDraw);
+  const selectedPromotions = selectedDrawContestCode ? promotionsByContestCode.get(selectedDrawContestCode) ?? [] : [];
+  const selectedTickets = selectedDrawContestCode ? ticketsByContestCode.get(selectedDrawContestCode) ?? [] : [];
 
   const openDrawScene = (drawId: string) => {
     setSelectedDrawId(drawId);
@@ -165,8 +258,8 @@ export default function Draws() {
   };
 
   const createDraw = async () => {
-    if (!selectedPromotionId) {
-      toast.error("Escolha a promocao que vai receber este sorteio.");
+    if (!selectedContestCode) {
+      toast.error("Escolha o concurso que vai receber este sorteio.");
       return;
     }
 
@@ -175,17 +268,19 @@ export default function Draws() {
       return;
     }
 
-    const currentPromotionDraws = drawsByPromotionId.get(selectedPromotionId) ?? [];
+    const currentContestDraws = drawsByContestCode.get(selectedContestCode) ?? [];
 
-    if (currentPromotionDraws.length >= 3) {
-      toast.error("Esta promocao ja atingiu o limite de 3 sorteios.");
+    if (currentContestDraws.length) {
+      toast.error("Este concurso ja possui um sorteio cadastrado.");
       return;
     }
 
     const payload = {
+      contest_code: selectedContestCode,
       draw_date: newDate,
-      promotion_id: selectedPromotionId,
-      sequence_number: currentPromotionDraws.length + 1,
+      promotion_id: null,
+      result_source: DEFAULT_RESULT_SOURCE,
+      sequence_number: 1,
       status: "scheduled",
       winner_count: DEFAULT_WINNER_COUNT,
     };
@@ -199,83 +294,117 @@ export default function Draws() {
 
     toast.success("Sorteio criado com sucesso.");
     setCreateDialogOpen(false);
-    setSelectedPromotionId("");
+    setSelectedContestCode("");
     setNewDate("");
     await loadData();
   };
 
-  const executeDraw = async () => {
-    if (!selectedDraw?.promotion_id || !selectedPromotion) {
-      toast.error("Selecione um sorteio vinculado a uma promocao.");
+  const loadLiveContestSnapshot = async (contestCode: string) => {
+    const [paymentsResponse, profilesResponse, numbersResponse] = await Promise.all([
+      getTable("payments")
+        .select("*")
+        .eq("contest_code", contestCode)
+        .order("payment_date", { ascending: true })
+        .order("created_at", { ascending: true }),
+      getTable("profiles").select("*"),
+      getTable("promotion_numbers")
+        .select("*")
+        .eq("contest_code", contestCode)
+        .order("ticket_number", { ascending: true }),
+    ]);
+
+    if (paymentsResponse.error || profilesResponse.error || numbersResponse.error) {
+      throw new Error("Nao foi possivel montar o pool oficial deste concurso.");
+    }
+
+    const livePayments = (paymentsResponse.data ?? []) as PaymentRecord[];
+    const liveProfiles = new Map(
+      ((profilesResponse.data ?? []) as ProfileRecord[])
+        .map((profile) => [getProfileKey(profile), profile] as const)
+        .filter(([key]) => Boolean(key)),
+    );
+    const livePaymentsById = new Map(livePayments.map((payment) => [payment.id, payment]));
+    const livePaidPayments = livePayments.filter(isApprovedPayment);
+    const liveTickets = buildTicketEntries(
+      (numbersResponse.data ?? []) as PromotionNumberRecord[],
+      livePaymentsById,
+      liveProfiles,
+    );
+
+    if (!liveTickets.length) {
+      throw new Error("Este concurso ainda nao possui numeros liberados para o sorteio.");
+    }
+
+    return {
+      livePaidPayments,
+      liveTickets,
+    };
+  };
+
+  const executeDraw = async (input: DrawExecutionInput) => {
+    if (!selectedDrawContestCode) {
+      toast.error("Selecione um sorteio vinculado a um concurso.");
+      return;
+    }
+
+    const officialWinningNumber = deriveFederalWinningNumber(input.firstPrizeNumber);
+
+    if (officialWinningNumber === null) {
+      toast.error("Informe o numero do 1o premio com pelo menos 4 digitos.");
       return;
     }
 
     setIsExecuting(true);
 
     try {
-      const [paymentsResponse, profilesResponse] = await Promise.all([
-        getTable("payments")
-          .select("*")
-          .eq("promotion_id", selectedDraw.promotion_id)
-          .order("payment_date", { ascending: true })
-          .order("created_at", { ascending: true }),
-        getTable("profiles").select("*"),
-      ]);
+      const { livePaidPayments, liveTickets } = await loadLiveContestSnapshot(selectedDrawContestCode);
 
-      if (paymentsResponse.error || profilesResponse.error) {
-        throw new Error("Nao foi possivel montar a fila oficial desta promocao.");
-      }
-
-      const liveProfiles = new Map(
-        ((profilesResponse.data ?? []) as ProfileRecord[])
-          .map((profile) => [getProfileKey(profile), profile] as const)
-          .filter(([key]) => Boolean(key)),
-      );
-
-      const liveQueue = buildQueueEntries((paymentsResponse.data ?? []) as PaymentRecord[], liveProfiles);
-
-      if (liveQueue.length < DEFAULT_WINNER_COUNT) {
-        throw new Error("Sao necessarios pelo menos 3 pagamentos aprovados para executar o sorteio.");
-      }
-
-      const winnerPositions = pickUniqueQueuePositions(liveQueue.length, DEFAULT_WINNER_COUNT);
-      const winners = winnerPositions
-        .map((position) => liveQueue.find((entry) => entry.position === position) ?? null)
-        .filter((entry): entry is QueueEntry => Boolean(entry));
+      const financials = calculateDrawFinancials(livePaidPayments, DEFAULT_WINNER_COUNT);
+      const winningCode = formatTicketNumber(officialWinningNumber);
+      const winnerTickets = liveTickets.filter((ticket) => ticket.ticketNumber === officialWinningNumber);
       const executedAt = new Date().toISOString();
-      const financials = calculateDrawFinancials(liveQueue, DEFAULT_WINNER_COUNT);
+      const winnerCodes = new Set(winnerTickets.map((ticket) => ticket.ticketCode));
 
-      const participantRows = liveQueue.map((entry) => ({
-        created_at: executedAt,
-        draw_id: selectedDraw.id,
-        is_winner: winnerPositions.includes(entry.position),
-        payment_id: entry.paymentId,
-        position: entry.position,
-        prize_amount: winnerPositions.includes(entry.position) ? financials.prizePerWinner : 0,
-        user_id: entry.userId,
-      }));
+      const participantRows = liveTickets.map((ticket, index) => {
+        const isWinner = winnerCodes.has(ticket.ticketCode);
+
+        return {
+          created_at: executedAt,
+          draw_id: selectedDraw.id,
+          is_winner: isWinner,
+          payment_id: ticket.paymentId,
+          position: index + 1,
+          prize_amount: isWinner ? financials.prizePerWinner : 0,
+          ticket_number: ticket.ticketNumber,
+          user_id: ticket.userId,
+        };
+      });
 
       const deleteResponse = await getTable("draw_participants").delete().eq("draw_id", selectedDraw.id);
       if (deleteResponse.error) {
-        throw new Error("Nao foi possivel atualizar o snapshot da fila deste sorteio.");
+        throw new Error("Nao foi possivel atualizar o snapshot dos numeros deste sorteio.");
       }
 
       const insertResponse = await getTable("draw_participants").insert(participantRows);
       if (insertResponse.error) {
-        throw new Error("Nao foi possivel salvar a fila oficial deste sorteio.");
+        throw new Error("Nao foi possivel salvar os numeros oficiais deste sorteio.");
       }
 
       const updateResponse = await getTable("draws")
         .update({
-          drawn_numbers: winnerPositions,
+          drawn_numbers: [officialWinningNumber],
           executed_at: executedAt,
+          federal_contest: input.federalContest || null,
+          federal_first_prize: input.firstPrizeNumber || null,
+          official_winning_number: officialWinningNumber,
           platform_cut: financials.platformCut,
           prize_per_winner: financials.prizePerWinner,
           prize_pool: financials.prizePool,
+          result_source: DEFAULT_RESULT_SOURCE,
           status: "drawn",
           total_pot: financials.totalPot,
-          winner_count: DEFAULT_WINNER_COUNT,
-          winner_user_ids: winners.map((winner) => winner.userId),
+          winner_count: winnerTickets.length,
+          winner_user_ids: winnerTickets.map((ticket) => ticket.userId),
         })
         .eq("id", selectedDraw.id);
 
@@ -285,15 +414,23 @@ export default function Draws() {
 
       setExecutionResult({
         executedAt,
+        federalContest: input.federalContest || null,
+        federalFirstPrize: input.firstPrizeNumber,
+        officialWinningCode: winningCode,
+        officialWinningNumber,
         platformCut: financials.platformCut,
         prizePerWinner: financials.prizePerWinner,
         prizePool: financials.prizePool,
         totalPot: financials.totalPot,
-        winnerPositions,
-        winners,
+        winnerTickets,
+        winnerSelectionMode: winnerTickets.length ? "exact" : "none",
       });
 
-      toast.success("Resultado oficial salvo. A cena da live ja pode ser exibida.");
+      toast.success(
+        winnerTickets.length
+          ? "Resultado oficial salvo com ganhador exato."
+          : "Resultado oficial salvo sem ganhador exato. Use a busca do mais proximo se quiser continuar.",
+      );
       await loadData();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Erro ao executar o sorteio.");
@@ -303,18 +440,92 @@ export default function Draws() {
     }
   };
 
+  const resolveClosestWinner = async () => {
+    if (!selectedDraw?.id || !selectedDrawContestCode || !executionResult) {
+      toast.error("Abra uma cena com resultado oficial para localizar o ganhador mais proximo.");
+      return;
+    }
+
+    if (executionResult.winnerTickets.length) {
+      toast.success("Esta rodada ja possui ganhador exato.");
+      return;
+    }
+
+    setIsResolvingClosestWinner(true);
+
+    try {
+      const { liveTickets } = await loadLiveContestSnapshot(selectedDrawContestCode);
+      const closestWinnerTicket = findClosestWinningTicket(liveTickets, executionResult.officialWinningNumber);
+
+      if (!closestWinnerTicket) {
+        throw new Error("Nao foi possivel localizar um numero proximo no pool oficial.");
+      }
+
+      const winnerTickets = [closestWinnerTicket];
+      const winnerCodes = new Set(winnerTickets.map((ticket) => ticket.ticketCode));
+      const participantRows = liveTickets.map((ticket, index) => ({
+        created_at: executionResult.executedAt,
+        draw_id: selectedDraw.id,
+        is_winner: winnerCodes.has(ticket.ticketCode),
+        payment_id: ticket.paymentId,
+        position: index + 1,
+        prize_amount: winnerCodes.has(ticket.ticketCode) ? executionResult.prizePerWinner : 0,
+        ticket_number: ticket.ticketNumber,
+        user_id: ticket.userId,
+      }));
+
+      const deleteResponse = await getTable("draw_participants").delete().eq("draw_id", selectedDraw.id);
+      if (deleteResponse.error) {
+        throw new Error("Nao foi possivel atualizar o snapshot dos numeros deste sorteio.");
+      }
+
+      const insertResponse = await getTable("draw_participants").insert(participantRows);
+      if (insertResponse.error) {
+        throw new Error("Nao foi possivel salvar o ganhador mais proximo deste sorteio.");
+      }
+
+      const updateResponse = await getTable("draws")
+        .update({
+          winner_count: winnerTickets.length,
+          winner_user_ids: winnerTickets.map((ticket) => ticket.userId),
+        })
+        .eq("id", selectedDraw.id);
+
+      if (updateResponse.error) {
+        throw new Error(updateResponse.error.message || "Nao foi possivel persistir o ganhador mais proximo.");
+      }
+
+      setExecutionResult((current) =>
+        current
+          ? {
+              ...current,
+              winnerTickets,
+              winnerSelectionMode: "closest",
+            }
+          : current,
+      );
+
+      toast.success("Ganhador mais proximo encontrado e salvo.");
+      await loadData();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Erro ao localizar o ganhador mais proximo.");
+    } finally {
+      setIsResolvingClosestWinner(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
         title="Sorteios"
-        description="Crie sorteios por promocao, acompanhe a fila oficial e execute a cena da live com 3 vencedores."
+        description="Organize um sorteio por concurso e execute a live com base nos 4 ultimos digitos do 1o premio da Loteria Federal."
         action={
           <Dialog
             onOpenChange={(open) => {
               setCreateDialogOpen(open);
 
               if (!open) {
-                setSelectedPromotionId("");
+                setSelectedContestCode("");
                 setNewDate("");
               }
             }}
@@ -332,29 +543,35 @@ export default function Draws() {
               </DialogHeader>
               <div className="space-y-4 pt-4">
                 <div className="space-y-2">
-                  <Label>Promocao</Label>
-                  <Select onValueChange={setSelectedPromotionId} value={selectedPromotionId}>
+                  <Label>Concurso</Label>
+                  <Select onValueChange={setSelectedContestCode} value={selectedContestCode}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Escolha a promocao" />
+                      <SelectValue placeholder="Escolha o concurso" />
                     </SelectTrigger>
                     <SelectContent>
-                      {availablePromotions.length ? (
-                        availablePromotions.map((promotion) => {
-                          const drawCount = (drawsByPromotionId.get(promotion.id) ?? []).length;
+                      {availableContests.length ? (
+                        availableContests.map(({ contestCode, draws: contestDraws, promotions: contestPromotions }) => {
+                          const drawCount = contestDraws.length;
 
                           return (
-                            <SelectItem disabled={drawCount >= 3} key={promotion.id} value={promotion.id}>
-                              {promotion.title} • {formatCurrency(getPromotionAmount(promotion))} • {drawCount}/3 sorteios
+                            <SelectItem disabled={drawCount > 0} key={contestCode} value={contestCode}>
+                              {formatContestLabel(contestCode)} • {contestPromotions.length} promocao(oes) •{" "}
+                              {drawCount ? "sorteio ja cadastrado" : "pronto para agendar"}
                             </SelectItem>
                           );
                         })
                       ) : (
-                        <SelectItem disabled value="sem-promocoes">
-                          Nenhuma promocao ativa
+                        <SelectItem disabled value="sem-concursos">
+                          Nenhum concurso ativo
                         </SelectItem>
                       )}
                     </SelectContent>
                   </Select>
+                  {selectedContestCode ? (
+                    <p className="text-xs text-muted-foreground">
+                      Promocoes neste concurso: {summarizePromotionTitles(promotionsByContestCode.get(selectedContestCode) ?? [])}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -367,8 +584,8 @@ export default function Draws() {
                 </div>
 
                 <p className="rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  A fila sera alimentada automaticamente pelos pagamentos aprovados da promocao escolhida. Cada promocao
-                  aceita ate 3 sorteios.
+                  Todas as promocoes com o mesmo concurso compartilham este unico sorteio. A live usa os 4 ultimos
+                  digitos do 1o premio da Loteria Federal para definir o numero vencedor.
                 </p>
 
                 <Button className="w-full" onClick={() => void createDraw()}>
@@ -385,10 +602,10 @@ export default function Draws() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Promocao</TableHead>
+                <TableHead>Concurso</TableHead>
                 <TableHead>Agenda</TableHead>
-                <TableHead>Fila</TableHead>
-                <TableHead>Premio por ganhador</TableHead>
+                <TableHead>Numeros liberados</TableHead>
+                <TableHead>Premio previsto</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Resultado</TableHead>
                 <TableHead className="text-right">Acao</TableHead>
@@ -409,18 +626,26 @@ export default function Draws() {
                 </TableRow>
               ) : (
                 draws.map((draw) => {
-                  const promotion = draw.promotion_id ? promotionById.get(draw.promotion_id) ?? null : null;
-                  const queue = draw.promotion_id ? queueByPromotionId.get(draw.promotion_id) ?? [] : [];
-                  const financials = calculateDrawFinancials(queue, DEFAULT_WINNER_COUNT);
-                  const drawnNumbers = draw.drawn_numbers?.length ? draw.drawn_numbers.join(" • ") : "Aguardando";
+                  const contestCode = getDrawContestCode(draw);
+                  const contestPromotions = contestCode ? promotionsByContestCode.get(contestCode) ?? [] : [];
+                  const tickets = contestCode ? ticketsByContestCode.get(contestCode) ?? [] : [];
+                  const paidPayments = contestCode ? paidPaymentsByContestCode.get(contestCode) ?? [] : [];
+                  const financials = calculateDrawFinancials(paidPayments, DEFAULT_WINNER_COUNT);
+                  const buyersCount = new Set(tickets.map((ticket) => ticket.userId)).size;
+                  const officialResult =
+                    typeof draw.official_winning_number === "number"
+                      ? formatTicketNumber(draw.official_winning_number)
+                      : "Aguardando";
 
                   return (
                     <TableRow key={draw.id}>
                       <TableCell>
                         <div className="space-y-1">
-                          <p className="font-medium">{promotion?.title ?? "Promocao nao vinculada"}</p>
+                          <p className="font-medium">{formatContestLabel(contestCode)}</p>
                           <p className="text-xs text-muted-foreground">
-                            {draw.sequence_number ? `${draw.sequence_number}º sorteio da promocao` : "Rodada manual"}
+                            {contestPromotions.length
+                              ? `${contestPromotions.length} promocao(oes): ${summarizePromotionTitles(contestPromotions)}`
+                              : "Nenhuma promocao vinculada a este concurso"}
                           </p>
                         </div>
                       </TableCell>
@@ -432,7 +657,7 @@ export default function Draws() {
                             <span>{formatDrawMoment(draw.draw_date)}</span>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            Valor da promocao: {formatCurrency(getPromotionAmount(promotion))}
+                            Sorteio unico compartilhado entre as promocoes do concurso
                           </p>
                         </div>
                       </TableCell>
@@ -441,10 +666,10 @@ export default function Draws() {
                         <div className="space-y-1 text-sm">
                           <div className="flex items-center gap-2 text-foreground">
                             <Ticket className="h-4 w-4 text-primary" />
-                            <span>{queue.length} participante(s)</span>
+                            <span>{tickets.length} numero(s)</span>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            3 numeros unicos sorteados dessa fila
+                            {buyersCount} comprador(es) com numeros ativos neste concurso
                           </p>
                         </div>
                       </TableCell>
@@ -453,10 +678,10 @@ export default function Draws() {
                         <div className="space-y-1 text-sm">
                           <div className="flex items-center gap-2 text-foreground">
                             <Trophy className="h-4 w-4 text-accent" />
-                            <span>{formatCurrency(draw.prize_per_winner ?? financials.prizePerWinner)}</span>
+                            <span>{formatCurrency(draw.prize_pool ?? financials.prizePool)}</span>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            Premio total: {formatCurrency(draw.prize_pool ?? financials.prizePool)}
+                            80% do montante pago no concurso
                           </p>
                         </div>
                       </TableCell>
@@ -467,22 +692,27 @@ export default function Draws() {
 
                       <TableCell>
                         <div className="space-y-1 text-sm">
-                          <p className="font-medium">{drawnNumbers}</p>
+                          <p className="font-medium">{officialResult}</p>
                           <p className="text-xs text-muted-foreground">
-                            {draw.executed_at ? `Executado em ${formatDrawMoment(draw.executed_at)}` : "Resultado ainda nao gerado"}
+                            {draw.federal_contest
+                              ? `Concurso ${draw.federal_contest}`
+                              : draw.executed_at
+                                ? "Resultado manual sem concurso informado"
+                                : "Aguardando resultado oficial"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {draw.executed_at
+                              ? `Executado em ${formatDrawMoment(draw.executed_at)}`
+                              : "Live ainda nao consolidada"}
                           </p>
                         </div>
                       </TableCell>
 
                       <TableCell className="text-right">
-                        {draw.status === "scheduled" ? (
-                          <Button onClick={() => openDrawScene(draw.id)} size="sm" variant="outline">
-                            <Sparkles className="mr-2 h-3 w-3" />
-                            Abrir cena
-                          </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Sorteio concluido</span>
-                        )}
+                        <Button onClick={() => openDrawScene(draw.id)} size="sm" variant="outline">
+                          <Sparkles className="mr-2 h-3 w-3" />
+                          {draw.status === "drawn" ? "Ver resultado" : "Abrir cena"}
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );
@@ -496,6 +726,7 @@ export default function Draws() {
       <LiveDrawDialog
         draw={selectedDraw}
         isExecuting={isExecuting}
+        isResolvingClosestWinner={isResolvingClosestWinner}
         onOpenChange={(open) => {
           setDrawSceneOpen(open);
 
@@ -504,11 +735,13 @@ export default function Draws() {
             setExecutionResult(null);
           }
         }}
-        onStart={() => void executeDraw()}
+        onStart={(input) => void executeDraw(input)}
+        onResolveClosestWinner={() => resolveClosestWinner()}
         open={drawSceneOpen}
-        promotion={selectedPromotion}
-        queue={selectedQueue}
+        contestCode={selectedDrawContestCode}
+        promotions={selectedPromotions}
         result={executionResult}
+        tickets={selectedTickets}
       />
     </>
   );

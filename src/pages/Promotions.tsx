@@ -17,34 +17,46 @@ import { supabase } from "@/integrations/supabase/externalClient";
 
 const DEFAULT_PROMOTION_AMOUNT = 10;
 const DEFAULT_PROMOTION_IMAGE = "/placeholder.svg";
+const DEFAULT_PROMOTION_PACKAGE_SIZE = 10;
+const MAX_PROMOTION_PACKAGE_SIZE = 9999;
 
 type Promotion = {
   active?: boolean | null;
+  contest_code?: string | null;
   created_at: string;
   description: string | null;
   end_date: string | null;
   entry_amount?: number | null;
+  file_type?: string | null;
+  file_url?: string | null;
   id: string;
   image_url: string | null;
   is_active?: boolean | null;
+  number_package_size?: number | null;
   start_date: string | null;
   title: string;
 };
 
 type PromotionForm = {
+  contest_code: string;
   description: string;
   end_date: string;
   entry_amount: string;
+  file_url: string;
   image_url: string;
+  number_package_size: string;
   start_date: string;
   title: string;
 };
 
 const emptyForm: PromotionForm = {
+  contest_code: "",
   description: "",
   end_date: "",
   entry_amount: DEFAULT_PROMOTION_AMOUNT.toFixed(2),
+  file_url: "",
   image_url: "",
+  number_package_size: String(DEFAULT_PROMOTION_PACKAGE_SIZE),
   start_date: "",
   title: "",
 };
@@ -70,6 +82,21 @@ function normalizeAmount(value: string) {
   return Number(normalized.toFixed(2));
 }
 
+function normalizePackageSize(value: string | number | null | undefined) {
+  const normalized = Number(value);
+
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    return DEFAULT_PROMOTION_PACKAGE_SIZE;
+  }
+
+  return Math.min(normalized, MAX_PROMOTION_PACKAGE_SIZE);
+}
+
+function isValidPackageSize(value: string) {
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized >= 1 && normalized <= MAX_PROMOTION_PACKAGE_SIZE;
+}
+
 function isPromotionActive(promotion: Promotion) {
   if (typeof promotion.is_active === "boolean") {
     return promotion.is_active;
@@ -93,15 +120,16 @@ function isSchemaDriftError(error: { details?: string; hint?: string; message?: 
   );
 }
 
-async function savePromotion(
-  editingId: string | null,
-  form: PromotionForm,
-) {
+async function savePromotion(editingId: string | null, form: PromotionForm) {
   const amount = normalizeAmount(form.entry_amount);
   const basePayload = {
+    contest_code: form.contest_code.trim(),
     description: form.description || null,
     end_date: form.end_date || null,
+    file_type: "pdf",
+    file_url: form.file_url.trim() || null,
     image_url: form.image_url || DEFAULT_PROMOTION_IMAGE,
+    number_package_size: normalizePackageSize(form.number_package_size),
     start_date: form.start_date || null,
     title: form.title.trim(),
   };
@@ -149,7 +177,7 @@ export default function Promotions() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      toast.error("Erro ao carregar promoções");
+      toast.error("Erro ao carregar posters");
       setLoading(false);
       return;
     }
@@ -164,7 +192,22 @@ export default function Promotions() {
 
   const handleSave = async () => {
     if (!form.title.trim()) {
-      toast.error("Informe o título da promoção");
+      toast.error("Informe o titulo do poster");
+      return;
+    }
+
+    if (!form.file_url.trim()) {
+      toast.error("Informe o link do PDF para liberar o download");
+      return;
+    }
+
+    if (!form.contest_code.trim()) {
+      toast.error("Informe o concurso desta promocao");
+      return;
+    }
+
+    if (!isValidPackageSize(form.number_package_size)) {
+      toast.error(`Informe uma quantidade inteira de numeros entre 1 e ${MAX_PROMOTION_PACKAGE_SIZE}`);
       return;
     }
 
@@ -175,7 +218,7 @@ export default function Promotions() {
       return;
     }
 
-    toast.success(editingId ? "Promoção atualizada!" : "Promoção criada!");
+    toast.success(editingId ? "Poster atualizado!" : "Poster criado!");
     setDialogOpen(false);
     setEditingId(null);
     setForm(emptyForm);
@@ -185,10 +228,13 @@ export default function Promotions() {
   const handleEdit = (promotion: Promotion) => {
     setEditingId(promotion.id);
     setForm({
+      contest_code: promotion.contest_code || "",
       description: promotion.description || "",
       end_date: promotion.end_date || "",
       entry_amount: Number(promotion.entry_amount ?? DEFAULT_PROMOTION_AMOUNT).toFixed(2),
+      file_url: promotion.file_url || "",
       image_url: promotion.image_url === DEFAULT_PROMOTION_IMAGE ? "" : promotion.image_url || "",
+      number_package_size: String(normalizePackageSize(promotion.number_package_size)),
       start_date: promotion.start_date || "",
       title: promotion.title,
     });
@@ -203,15 +249,15 @@ export default function Promotions() {
       return;
     }
 
-    toast.success("Promoção excluída!");
+    toast.success("Poster excluido!");
     await load();
   };
 
   return (
     <>
       <PageHeader
-        title="Promoções"
-        description="Gerenciar banners, campanhas e o valor padrão de entrada"
+        title="Posters e promocoes"
+        description="Cadastre o poster PDF, o concurso compartilhado, a quantidade de numeros por compra e o valor da campanha."
         action={
           <Dialog
             open={dialogOpen}
@@ -227,16 +273,25 @@ export default function Promotions() {
             <DialogTrigger asChild>
               <Button>
                 <Plus className="mr-2 h-4 w-4" />
-                Nova Promoção
+                Novo poster
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>{editingId ? "Editar" : "Nova"} Promoção</DialogTitle>
+                <DialogTitle>{editingId ? "Editar" : "Novo"} poster</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 pt-4">
                 <div>
-                  <Label>Título</Label>
+                  <Label>Concurso</Label>
+                  <Input
+                    placeholder="Ex.: FED-6054"
+                    value={form.contest_code}
+                    onChange={(event) => setForm({ ...form, contest_code: event.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <Label>Titulo</Label>
                   <Input
                     value={form.title}
                     onChange={(event) => setForm({ ...form, title: event.target.value })}
@@ -244,14 +299,14 @@ export default function Promotions() {
                 </div>
 
                 <div>
-                  <Label>Descrição</Label>
+                  <Label>Descricao</Label>
                   <Textarea
                     value={form.description}
                     onChange={(event) => setForm({ ...form, description: event.target.value })}
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <Label>Valor</Label>
                     <Input
@@ -262,19 +317,44 @@ export default function Promotions() {
                       onChange={(event) => setForm({ ...form, entry_amount: event.target.value })}
                     />
                   </div>
-                  <div>
-                    <Label>URL da Imagem</Label>
+                  <div className="space-y-2">
+                    <Label>Quantidade de numeros por compra</Label>
                     <Input
-                      placeholder="/placeholder.svg"
-                      value={form.image_url}
-                      onChange={(event) => setForm({ ...form, image_url: event.target.value })}
+                      min="1"
+                      max={String(MAX_PROMOTION_PACKAGE_SIZE)}
+                      step="1"
+                      type="number"
+                      placeholder="Ex.: 15"
+                      value={form.number_package_size}
+                      onChange={(event) => setForm({ ...form, number_package_size: event.target.value })}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Informe um numero inteiro entre 1 e {MAX_PROMOTION_PACKAGE_SIZE}.
+                    </p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>URL do PDF (Google Drive)</Label>
+                  <Input
+                    placeholder="https://drive.google.com/..."
+                    value={form.file_url}
+                    onChange={(event) => setForm({ ...form, file_url: event.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <Label>URL da imagem</Label>
+                  <Input
+                    placeholder="/placeholder.svg"
+                    value={form.image_url}
+                    onChange={(event) => setForm({ ...form, image_url: event.target.value })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
-                    <Label>Início</Label>
+                    <Label>Inicio</Label>
                     <Input
                       type="date"
                       value={form.start_date}
@@ -292,7 +372,8 @@ export default function Promotions() {
                 </div>
 
                 <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  Se a imagem ficar vazia, usamos ` /placeholder.svg ` para evitar erro de criação.
+                  O produto vendido agora e o poster PDF. Os numeros para o sorteio sao liberados automaticamente
+                  somente depois da confirmacao do pagamento.
                 </p>
 
                 <Button className="w-full" onClick={() => void handleSave()}>
@@ -309,31 +390,44 @@ export default function Promotions() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Título</TableHead>
+                <TableHead>Concurso</TableHead>
+                <TableHead>Poster</TableHead>
                 <TableHead>Valor</TableHead>
-                <TableHead>Período</TableHead>
+                <TableHead>Pacote</TableHead>
+                <TableHead>PDF</TableHead>
+                <TableHead>Periodo</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="text-right">Ações</TableHead>
+                <TableHead className="text-right">Acoes</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={5}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
                     Carregando...
                   </TableCell>
                 </TableRow>
               ) : promotions.length === 0 ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={5}>
-                    Nenhuma promoção
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
+                    Nenhum poster cadastrado
                   </TableCell>
                 </TableRow>
               ) : (
                 promotions.map((promotion) => (
                   <TableRow key={promotion.id}>
-                    <TableCell className="font-medium">{promotion.title}</TableCell>
+                    <TableCell className="font-medium">{promotion.contest_code || "-"}</TableCell>
+                    <TableCell>
+                      <div className="space-y-1">
+                        <p className="font-medium">{promotion.title}</p>
+                        <p className="text-xs text-muted-foreground">Arquivo {promotion.file_type?.toUpperCase() ?? "PDF"}</p>
+                      </div>
+                    </TableCell>
                     <TableCell>{formatCurrency(promotion.entry_amount)}</TableCell>
+                    <TableCell>{normalizePackageSize(promotion.number_package_size)} numeros</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {promotion.file_url ? "Configurado" : "Pendente"}
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {promotion.start_date
                         ? format(new Date(promotion.start_date), "dd/MM", { locale: ptBR })

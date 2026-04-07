@@ -1,24 +1,33 @@
 export type PromotionRecord = {
   active?: boolean | null;
+  contest_code?: string | null;
   created_at?: string | null;
   description?: string | null;
   entry_amount?: number | null;
+  file_type?: string | null;
+  file_url?: string | null;
   id: string;
   image_url?: string | null;
   is_active?: boolean | null;
+  number_package_size?: number | null;
   title: string;
 };
 
 export type DrawRecord = {
+  contest_code?: string | null;
   created_at?: string | null;
   draw_date: string;
   drawn_numbers?: number[] | null;
   executed_at?: string | null;
+  federal_contest?: string | null;
+  federal_first_prize?: string | null;
   id: string;
+  official_winning_number?: number | null;
   platform_cut?: number | null;
   prize_per_winner?: number | null;
   prize_pool?: number | null;
   promotion_id?: string | null;
+  result_source?: string | null;
   sequence_number?: number | null;
   status: string;
   total_pot?: number | null;
@@ -28,6 +37,7 @@ export type DrawRecord = {
 
 export type PaymentRecord = {
   amount?: number | null;
+  contest_code?: string | null;
   created_at?: string | null;
   draw_id?: string | null;
   id: string;
@@ -35,6 +45,16 @@ export type PaymentRecord = {
   promotion_id?: string | null;
   status?: string | null;
   transaction_id?: string | null;
+  user_id: string;
+};
+
+export type PromotionNumberRecord = {
+  contest_code?: string | null;
+  created_at?: string | null;
+  id: string;
+  payment_id: string;
+  promotion_id: string;
+  ticket_number: number;
   user_id: string;
 };
 
@@ -52,20 +72,23 @@ export type ProfileRecord = {
   user_id?: string | null;
 };
 
-export type QueueEntry = {
+export type TicketEntry = {
   amount: number;
   approvedAt: string;
   cpf?: string | null;
   displayName: string;
   email?: string | null;
   paymentId: string;
-  position: number;
+  ticketCode: string;
+  ticketNumber: number;
   userId: string;
 };
 
 export const DEFAULT_PROMOTION_AMOUNT = 10;
+export const DEFAULT_PROMOTION_PACKAGE_SIZE = 10;
+export const MAX_PROMOTION_PACKAGE_SIZE = 9999;
+export const DEFAULT_WINNER_COUNT = 1;
 export const PLATFORM_PERCENTAGE = 0.2;
-export const DEFAULT_WINNER_COUNT = 3;
 
 export function normalizePaymentStatus(status?: string | null) {
   switch ((status ?? "").toLowerCase()) {
@@ -105,6 +128,74 @@ export function getPromotionAmount(promotion?: PromotionRecord | null) {
   return Number.isFinite(value) && value > 0 ? Number(value.toFixed(2)) : DEFAULT_PROMOTION_AMOUNT;
 }
 
+export function normalizePackageSize(value?: number | null) {
+  const normalized = Number(value ?? DEFAULT_PROMOTION_PACKAGE_SIZE);
+
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    return DEFAULT_PROMOTION_PACKAGE_SIZE;
+  }
+
+  return Math.min(normalized, MAX_PROMOTION_PACKAGE_SIZE);
+}
+
+export function normalizeContestCode(value?: string | null, fallback?: string | null) {
+  const normalized = value?.trim();
+
+  if (normalized) {
+    return normalized;
+  }
+
+  const normalizedFallback = fallback?.trim();
+  return normalizedFallback || "";
+}
+
+export function getPromotionContestCode(promotion?: PromotionRecord | null) {
+  return normalizeContestCode(promotion?.contest_code, promotion?.id);
+}
+
+export function getDrawContestCode(draw?: DrawRecord | null) {
+  return normalizeContestCode(draw?.contest_code, draw?.promotion_id ?? draw?.id);
+}
+
+export function getPaymentContestCode(
+  payment: PaymentRecord,
+  promotionsById?: Map<string, PromotionRecord>,
+) {
+  const promotion = payment.promotion_id ? promotionsById?.get(payment.promotion_id) ?? null : null;
+  return normalizeContestCode(payment.contest_code, getPromotionContestCode(promotion) || payment.promotion_id || payment.id);
+}
+
+export function getPromotionNumberContestCode(
+  promotionNumber: PromotionNumberRecord,
+  promotionsById?: Map<string, PromotionRecord>,
+) {
+  const promotion = promotionsById?.get(promotionNumber.promotion_id) ?? null;
+  return normalizeContestCode(
+    promotionNumber.contest_code,
+    getPromotionContestCode(promotion) || promotionNumber.promotion_id || promotionNumber.id,
+  );
+}
+
+export function formatTicketNumber(value?: number | null) {
+  const normalized = Number(value ?? 0);
+
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return "0000";
+  }
+
+  return String(Math.trunc(normalized)).padStart(4, "0");
+}
+
+export function deriveFederalWinningNumber(firstPrizeValue?: string | null) {
+  const normalized = (firstPrizeValue ?? "").replace(/\D/g, "");
+
+  if (normalized.length < 4) {
+    return null;
+  }
+
+  return Number.parseInt(normalized.slice(-4), 10);
+}
+
 export function getProfileKey(profile: ProfileRecord) {
   return profile.user_id ?? profile.id ?? "";
 }
@@ -119,53 +210,87 @@ export function getProfileDisplayName(profile?: ProfileRecord | null, userId?: s
   return label ? label : "Participante";
 }
 
-export function buildQueueEntries(
-  payments: PaymentRecord[],
+export function buildTicketEntries(
+  promotionNumbers: PromotionNumberRecord[],
+  paymentsById: Map<string, PaymentRecord>,
   profilesByUserId: Map<string, ProfileRecord>,
 ) {
-  const seenUsers = new Set<string>();
-
-  return payments
-    .filter(isApprovedPayment)
+  return promotionNumbers
+    .filter((promotionNumber) => {
+      const payment = paymentsById.get(promotionNumber.payment_id);
+      return Boolean(payment && isApprovedPayment(payment));
+    })
     .sort((left, right) => {
-      const leftMoment = new Date(left.payment_date ?? left.created_at ?? 0).getTime();
-      const rightMoment = new Date(right.payment_date ?? right.created_at ?? 0).getTime();
-
-      if (leftMoment === rightMoment) {
+      if (left.ticket_number === right.ticket_number) {
         return left.id.localeCompare(right.id);
       }
 
-      return leftMoment - rightMoment;
+      return left.ticket_number - right.ticket_number;
     })
-    .flatMap((payment) => {
-      if (seenUsers.has(payment.user_id)) {
-        return [];
-      }
+    .map((promotionNumber) => {
+      const payment = paymentsById.get(promotionNumber.payment_id);
+      const profile = profilesByUserId.get(promotionNumber.user_id);
 
-      seenUsers.add(payment.user_id);
-      const profile = profilesByUserId.get(payment.user_id);
-
-      return [
-        {
-          amount: Number(payment.amount ?? 0),
-          approvedAt: payment.payment_date ?? payment.created_at ?? new Date().toISOString(),
-          cpf: profile?.cpf ?? null,
-          displayName: getProfileDisplayName(profile, payment.user_id),
-          email: profile?.email ?? null,
-          paymentId: payment.id,
-          position: seenUsers.size,
-          userId: payment.user_id,
-        } satisfies QueueEntry,
-      ];
+      return {
+        amount: Number(payment?.amount ?? 0),
+        approvedAt: payment?.payment_date ?? payment?.created_at ?? promotionNumber.created_at ?? new Date().toISOString(),
+        cpf: profile?.cpf ?? null,
+        displayName: getProfileDisplayName(profile, promotionNumber.user_id),
+        email: profile?.email ?? null,
+        paymentId: promotionNumber.payment_id,
+        ticketCode: formatTicketNumber(promotionNumber.ticket_number),
+        ticketNumber: promotionNumber.ticket_number,
+        userId: promotionNumber.user_id,
+      } satisfies TicketEntry;
     });
+}
+
+export function findClosestWinningTicket(tickets: TicketEntry[], officialWinningNumber: number) {
+  if (!tickets.length) {
+    return null;
+  }
+
+  let closestTicket = tickets[0];
+  let closestDistance = Math.abs(closestTicket.ticketNumber - officialWinningNumber);
+
+  for (const ticket of tickets.slice(1)) {
+    const distance = Math.abs(ticket.ticketNumber - officialWinningNumber);
+
+    if (distance < closestDistance) {
+      closestTicket = ticket;
+      closestDistance = distance;
+      continue;
+    }
+
+    if (distance !== closestDistance) {
+      continue;
+    }
+
+    const ticketIsAbove = ticket.ticketNumber >= officialWinningNumber;
+    const closestIsAbove = closestTicket.ticketNumber >= officialWinningNumber;
+
+    if (ticketIsAbove && !closestIsAbove) {
+      closestTicket = ticket;
+      continue;
+    }
+
+    if (ticketIsAbove === closestIsAbove && ticket.ticketNumber > closestTicket.ticketNumber) {
+      closestTicket = ticket;
+    }
+  }
+
+  return closestTicket;
 }
 
 export function roundCurrency(value: number) {
   return Number(value.toFixed(2));
 }
 
-export function calculateDrawFinancials(queue: QueueEntry[], winnerCount = DEFAULT_WINNER_COUNT) {
-  const totalPot = roundCurrency(queue.reduce((sum, entry) => sum + Number(entry.amount || 0), 0));
+export function calculateDrawFinancials(
+  entries: Array<{ amount?: number | null }>,
+  winnerCount = DEFAULT_WINNER_COUNT,
+) {
+  const totalPot = roundCurrency(entries.reduce((sum, entry) => sum + Number(entry.amount ?? 0), 0));
   const platformCut = roundCurrency(totalPot * PLATFORM_PERCENTAGE);
   const prizePool = roundCurrency(totalPot - platformCut);
   const prizePerWinner = winnerCount > 0 ? roundCurrency(prizePool / winnerCount) : 0;
@@ -176,19 +301,4 @@ export function calculateDrawFinancials(queue: QueueEntry[], winnerCount = DEFAU
     prizePool,
     totalPot,
   };
-}
-
-export function pickUniqueQueuePositions(queueLength: number, winnerCount = DEFAULT_WINNER_COUNT) {
-  const pool = Array.from({ length: queueLength }, (_, index) => index + 1);
-
-  for (let index = pool.length - 1; index > 0; index -= 1) {
-    const randomArray = new Uint32Array(1);
-    crypto.getRandomValues(randomArray);
-    const randomIndex = randomArray[0] % (index + 1);
-    const current = pool[index];
-    pool[index] = pool[randomIndex];
-    pool[randomIndex] = current;
-  }
-
-  return pool.slice(0, winnerCount);
 }

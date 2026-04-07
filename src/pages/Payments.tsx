@@ -54,7 +54,7 @@ export default function Payments() {
     <>
       <PageHeader
         title="Pagamentos"
-        description="Historico das compras de promocao que alimentam a fila oficial dos sorteios"
+        description="Historico das compras de poster que liberam PDF e numeros promocionais"
       />
       <Card>
         <CardContent className="p-0">
@@ -62,7 +62,7 @@ export default function Payments() {
             <TableHeader>
               <TableRow>
                 <TableHead>Participante</TableHead>
-                <TableHead>Promocao</TableHead>
+                <TableHead>Poster</TableHead>
                 <TableHead>Valor</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Data</TableHead>
