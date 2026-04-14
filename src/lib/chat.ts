@@ -2,6 +2,7 @@ type RawRecord = Record<string, unknown>;
 
 type SupabaseLikeClient = {
   from: (table: string) => any;
+  rpc?: (fn: string, args?: Record<string, unknown>) => Promise<{ data?: unknown; error?: unknown }>;
 };
 
 export type ChatEntry = {
@@ -36,6 +37,20 @@ function readBoolean(value: unknown) {
 
 function readTimestamp(row: RawRecord) {
   return readString(row.sent_at) || readString(row.created_at) || new Date(0).toISOString();
+}
+
+function shouldRetryLegacyChatInsert(error: { message?: string | null } | null | undefined) {
+  const message = String(error?.message ?? "").toLowerCase();
+
+  return (
+    message.includes("could not find the 'message' column") ||
+    message.includes("could not find the 'user_id' column") ||
+    message.includes("could not find the 'content' column") ||
+    message.includes("could not find the 'sender_id' column") ||
+    message.includes("null value in column \"sender_id\"") ||
+    message.includes("null value in column \"content\"") ||
+    (message.includes("column") && message.includes("does not exist"))
+  );
 }
 
 function buildFallbackParticipantLabel(userId: string) {
@@ -201,6 +216,13 @@ export async function loadAdminUserIds(supabase: SupabaseLikeClient) {
 }
 
 export async function resolveSupportReceiverId(supabase: SupabaseLikeClient, currentUserId: string) {
+  const supportAdminResult = await supabase.rpc?.("get_support_admin_user_id");
+  const supportAdminId = typeof supportAdminResult?.data === "string" ? supportAdminResult.data : null;
+
+  if (supportAdminId && supportAdminId !== currentUserId) {
+    return supportAdminId;
+  }
+
   const adminUserIds = await loadAdminUserIds(supabase);
 
   return adminUserIds.find((userId) => userId !== currentUserId) ?? currentUserId;
@@ -216,6 +238,9 @@ export async function sendPublicChatMessage(
     .insert({ message: body, user_id: senderId });
 
   if (!firstAttempt.error) return null;
+  if (!shouldRetryLegacyChatInsert(firstAttempt.error)) {
+    return firstAttempt.error.message ?? "Erro ao enviar mensagem.";
+  }
 
   const fallbackAttempt = await supabase
     .from("public_chat_messages")
@@ -235,6 +260,9 @@ export async function sendPrivateChatMessage(
     .insert({ message: body, receiver_id: receiverId, sender_id: senderId });
 
   if (!firstAttempt.error) return null;
+  if (!shouldRetryLegacyChatInsert(firstAttempt.error)) {
+    return firstAttempt.error.message ?? "Erro ao enviar mensagem.";
+  }
 
   const fallbackAttempt = await supabase
     .from("private_chat_messages")

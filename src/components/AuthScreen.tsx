@@ -61,7 +61,7 @@ export function LoginScreen() {
             <Trophy className="h-7 w-7" />
           </div>
           <div className="space-y-1">
-            <CardTitle className="text-2xl">SorteioPro Backoffice</CardTitle>
+            <CardTitle className="text-2xl">Poster Premiado Backoffice</CardTitle>
             <CardDescription>
               Entre com uma conta Supabase que tenha o papel <strong>admin</strong>.
             </CardDescription>
@@ -130,8 +130,7 @@ export function LoginScreen() {
           </form>
 
           <p className="mt-4 text-sm text-muted-foreground">
-            Se a conta autenticar mas o painel nao abrir, confira se existe uma linha em{" "}
-            <code>public.user_roles</code> com o papel <code>admin</code> para esse usuario.
+            Se a conta autenticar mas o painel nao abrir, confira se existe o papel <code>admin</code> para esse usuario.
           </p>
         </CardContent>
       </Card>
@@ -169,8 +168,8 @@ export function AccessDeniedScreen() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            O banco esta com RLS habilitado e permite alteracoes do backoffice apenas para usuarios
-            autenticados com o papel <code>admin</code> na tabela <code>public.user_roles</code>.
+            O banco esta com habilitado e permite alteracoes apenas para usuarios
+            autenticados com o papel <code>admin</code> na tabela.
           </p>
 
           <Button className="w-full" variant="outline" onClick={handleSignOut} disabled={isSubmitting}>

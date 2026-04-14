@@ -46,6 +46,8 @@ import {
 } from "@/lib/raffle";
 
 const DEFAULT_RESULT_SOURCE = "manual";
+const EXACT_RESULT_SOURCE = "manual_exact";
+const CLOSEST_RESULT_SOURCE = "manual_closest";
 const DEFAULT_WINNER_COUNT = 1;
 
 function formatContestLabel(contestCode?: string | null) {
@@ -400,7 +402,7 @@ export default function Draws() {
           platform_cut: financials.platformCut,
           prize_per_winner: financials.prizePerWinner,
           prize_pool: financials.prizePool,
-          result_source: DEFAULT_RESULT_SOURCE,
+          result_source: EXACT_RESULT_SOURCE,
           status: "drawn",
           total_pot: financials.totalPot,
           winner_count: winnerTickets.length,
@@ -486,6 +488,7 @@ export default function Draws() {
 
       const updateResponse = await getTable("draws")
         .update({
+          result_source: CLOSEST_RESULT_SOURCE,
           winner_count: winnerTickets.length,
           winner_user_ids: winnerTickets.map((ticket) => ticket.userId),
         })

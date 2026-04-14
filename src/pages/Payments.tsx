@@ -7,20 +7,42 @@ import StatusBadge from "@/components/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/externalClient";
-import { getProfileDisplayName, type ProfileRecord, type PromotionRecord } from "@/lib/raffle";
+import {
+  getPaymentAttributionLabel,
+  getPaymentAttributionSource,
+  getProfileDisplayName,
+  type PaymentRecord,
+  type ProfileRecord,
+  type PromotionRecord,
+} from "@/lib/raffle";
 
-interface Payment {
-  amount: number;
-  created_at: string;
-  id: string;
-  payment_date?: string | null;
-  promotion_id?: string | null;
-  status: string;
-  user_id: string;
+function formatSourceLabel(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+
+  switch (normalized) {
+    case "facebook":
+      return "Facebook";
+    case "google":
+      return "Google";
+    case "instagram":
+      return "Instagram";
+    case "kwai":
+      return "Kwai";
+    case "meta":
+      return "Meta";
+    case "tiktok":
+      return "TikTok";
+    case "x":
+      return "X";
+    case "youtube":
+      return "YouTube";
+    default:
+      return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Nao atribuido";
+  }
 }
 
 export default function Payments() {
-  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
   const [promotions, setPromotions] = useState<PromotionRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,7 +55,7 @@ export default function Payments() {
         supabase.from("promotions").select("*"),
       ]);
 
-      setPayments((paymentsResponse.data || []) as Payment[]);
+      setPayments((paymentsResponse.data || []) as PaymentRecord[]);
       setProfiles((profilesResponse.data || []) as ProfileRecord[]);
       setPromotions((promotionsResponse.data || []) as PromotionRecord[]);
       setLoading(false);
@@ -57,12 +79,15 @@ export default function Payments() {
         description="Historico das compras de poster que liberam PDF e numeros promocionais"
       />
       <Card>
-        <CardContent className="p-0">
+        <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Participante</TableHead>
                 <TableHead>Poster</TableHead>
+                <TableHead>Qtd.</TableHead>
+                <TableHead>Origem</TableHead>
+                <TableHead>Campanha</TableHead>
                 <TableHead>Valor</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Data</TableHead>
@@ -71,13 +96,13 @@ export default function Payments() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={5}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
                     Carregando...
                   </TableCell>
                 </TableRow>
               ) : payments.length === 0 ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={5}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
                     Nenhum pagamento
                   </TableCell>
                 </TableRow>
@@ -93,6 +118,13 @@ export default function Payments() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {promotion?.title ?? "Promocao nao vinculada"}
+                      </TableCell>
+                      <TableCell>{payment.poster_quantity ?? 1}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {formatSourceLabel(getPaymentAttributionSource(payment))}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {getPaymentAttributionLabel(payment)}
                       </TableCell>
                       <TableCell>R$ {Number(payment.amount).toFixed(2)}</TableCell>
                       <TableCell>

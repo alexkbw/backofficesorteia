@@ -17,8 +17,6 @@ import { supabase } from "@/integrations/supabase/externalClient";
 
 const DEFAULT_PROMOTION_AMOUNT = 10;
 const DEFAULT_PROMOTION_IMAGE = "/placeholder.svg";
-const DEFAULT_PROMOTION_PACKAGE_SIZE = 10;
-const MAX_PROMOTION_PACKAGE_SIZE = 9999;
 
 type Promotion = {
   active?: boolean | null;
@@ -44,7 +42,6 @@ type PromotionForm = {
   entry_amount: string;
   file_url: string;
   image_url: string;
-  number_package_size: string;
   start_date: string;
   title: string;
 };
@@ -56,7 +53,6 @@ const emptyForm: PromotionForm = {
   entry_amount: DEFAULT_PROMOTION_AMOUNT.toFixed(2),
   file_url: "",
   image_url: "",
-  number_package_size: String(DEFAULT_PROMOTION_PACKAGE_SIZE),
   start_date: "",
   title: "",
 };
@@ -80,21 +76,6 @@ function normalizeAmount(value: string) {
   }
 
   return Number(normalized.toFixed(2));
-}
-
-function normalizePackageSize(value: string | number | null | undefined) {
-  const normalized = Number(value);
-
-  if (!Number.isInteger(normalized) || normalized < 1) {
-    return DEFAULT_PROMOTION_PACKAGE_SIZE;
-  }
-
-  return Math.min(normalized, MAX_PROMOTION_PACKAGE_SIZE);
-}
-
-function isValidPackageSize(value: string) {
-  const normalized = Number(value);
-  return Number.isInteger(normalized) && normalized >= 1 && normalized <= MAX_PROMOTION_PACKAGE_SIZE;
 }
 
 function isPromotionActive(promotion: Promotion) {
@@ -129,7 +110,6 @@ async function savePromotion(editingId: string | null, form: PromotionForm) {
     file_type: "pdf",
     file_url: form.file_url.trim() || null,
     image_url: form.image_url || DEFAULT_PROMOTION_IMAGE,
-    number_package_size: normalizePackageSize(form.number_package_size),
     start_date: form.start_date || null,
     title: form.title.trim(),
   };
@@ -206,11 +186,6 @@ export default function Promotions() {
       return;
     }
 
-    if (!isValidPackageSize(form.number_package_size)) {
-      toast.error(`Informe uma quantidade inteira de numeros entre 1 e ${MAX_PROMOTION_PACKAGE_SIZE}`);
-      return;
-    }
-
     const { error } = await savePromotion(editingId, form);
 
     if (error) {
@@ -234,7 +209,6 @@ export default function Promotions() {
       entry_amount: Number(promotion.entry_amount ?? DEFAULT_PROMOTION_AMOUNT).toFixed(2),
       file_url: promotion.file_url || "",
       image_url: promotion.image_url === DEFAULT_PROMOTION_IMAGE ? "" : promotion.image_url || "",
-      number_package_size: String(normalizePackageSize(promotion.number_package_size)),
       start_date: promotion.start_date || "",
       title: promotion.title,
     });
@@ -257,7 +231,7 @@ export default function Promotions() {
     <>
       <PageHeader
         title="Posters e promocoes"
-        description="Cadastre o poster PDF, o concurso compartilhado, a quantidade de numeros por compra e o valor da campanha."
+        description="Cadastre o poster PDF, o concurso compartilhado e o valor unitario da campanha. A quantidade sera escolhida pelo usuario na compra."
         action={
           <Dialog
             open={dialogOpen}
@@ -308,7 +282,7 @@ export default function Promotions() {
 
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
-                    <Label>Valor</Label>
+                    <Label>Valor por poster</Label>
                     <Input
                       min="0"
                       step="0.01"
@@ -316,21 +290,6 @@ export default function Promotions() {
                       value={form.entry_amount}
                       onChange={(event) => setForm({ ...form, entry_amount: event.target.value })}
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Quantidade de numeros por compra</Label>
-                    <Input
-                      min="1"
-                      max={String(MAX_PROMOTION_PACKAGE_SIZE)}
-                      step="1"
-                      type="number"
-                      placeholder="Ex.: 15"
-                      value={form.number_package_size}
-                      onChange={(event) => setForm({ ...form, number_package_size: event.target.value })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Informe um numero inteiro entre 1 e {MAX_PROMOTION_PACKAGE_SIZE}.
-                    </p>
                   </div>
                 </div>
 
@@ -372,8 +331,8 @@ export default function Promotions() {
                 </div>
 
                 <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  O produto vendido agora e o poster PDF. Os numeros para o sorteio sao liberados automaticamente
-                  somente depois da confirmacao do pagamento.
+                  O produto vendido agora e o poster PDF. O usuario escolhe a quantidade de posters na hora da compra,
+                  e cada poster aprovado libera 1 numero para o sorteio.
                 </p>
 
                 <Button className="w-full" onClick={() => void handleSave()}>
@@ -393,7 +352,6 @@ export default function Promotions() {
                 <TableHead>Concurso</TableHead>
                 <TableHead>Poster</TableHead>
                 <TableHead>Valor</TableHead>
-                <TableHead>Pacote</TableHead>
                 <TableHead>PDF</TableHead>
                 <TableHead>Periodo</TableHead>
                 <TableHead>Status</TableHead>
@@ -403,13 +361,13 @@ export default function Promotions() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={7}>
                     Carregando...
                   </TableCell>
                 </TableRow>
               ) : promotions.length === 0 ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={8}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={7}>
                     Nenhum poster cadastrado
                   </TableCell>
                 </TableRow>
@@ -424,7 +382,6 @@ export default function Promotions() {
                       </div>
                     </TableCell>
                     <TableCell>{formatCurrency(promotion.entry_amount)}</TableCell>
-                    <TableCell>{normalizePackageSize(promotion.number_package_size)} numeros</TableCell>
                     <TableCell className="text-muted-foreground">
                       {promotion.file_url ? "Configurado" : "Pendente"}
                     </TableCell>

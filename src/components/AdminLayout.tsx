@@ -47,7 +47,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
               <Trophy className="w-5 h-5 text-accent-foreground" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-sidebar-accent-foreground">SorteioPro</h1>
+              <h1 className="text-base font-bold text-sidebar-accent-foreground">Poster Premiado</h1>
               <p className="text-xs text-sidebar-foreground/60">Backoffice</p>
             </div>
           </div>

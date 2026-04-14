@@ -335,6 +335,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_support_admin_user_id: {
+        Args: Record<PropertyKey, never>
+        Returns: string
+      }
       get_my_participant_controls: {
         Args: Record<PropertyKey, never>
         Returns: {

@@ -37,11 +37,20 @@ export type DrawRecord = {
 
 export type PaymentRecord = {
   amount?: number | null;
+  attribution_campaign?: string | null;
+  attribution_content?: string | null;
+  attribution_id?: string | null;
+  attribution_landing_path?: string | null;
+  attribution_medium?: string | null;
+  attribution_referrer_host?: string | null;
+  attribution_source?: string | null;
+  attributed_at?: string | null;
   contest_code?: string | null;
   created_at?: string | null;
   draw_id?: string | null;
   id: string;
   payment_date?: string | null;
+  poster_quantity?: number | null;
   promotion_id?: string | null;
   status?: string | null;
   transaction_id?: string | null;
@@ -105,6 +114,37 @@ export function normalizePaymentStatus(status?: string | null) {
     default:
       return "pending";
   }
+}
+
+function normalizeAttributionValue(value?: string | null) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+export function getPaymentAttributionSource(payment?: PaymentRecord | null) {
+  return normalizeAttributionValue(payment?.attribution_source);
+}
+
+export function getPaymentAttributionCampaign(payment?: PaymentRecord | null) {
+  return normalizeAttributionValue(payment?.attribution_campaign);
+}
+
+export function getPaymentAttributionId(payment?: PaymentRecord | null) {
+  return normalizeAttributionValue(payment?.attribution_id);
+}
+
+export function hasPaymentAttribution(payment?: PaymentRecord | null) {
+  return Boolean(
+    getPaymentAttributionSource(payment) ||
+      normalizeAttributionValue(payment?.attribution_medium) ||
+      getPaymentAttributionCampaign(payment) ||
+      getPaymentAttributionId(payment) ||
+      normalizeAttributionValue(payment?.attribution_content),
+  );
+}
+
+export function getPaymentAttributionLabel(payment?: PaymentRecord | null) {
+  return getPaymentAttributionCampaign(payment) || getPaymentAttributionId(payment) || "Campanha nao identificada";
 }
 
 export function isApprovedPayment(payment: PaymentRecord) {

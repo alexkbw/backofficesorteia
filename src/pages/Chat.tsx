@@ -172,6 +172,13 @@ function mergeIdentityMap(
   return next;
 }
 
+function getRequestedUserIdFromLocation(location: ReturnType<typeof useLocation>) {
+  const stateUserId = ((location.state as ChatLocationState | null)?.selectedUserId ?? "").trim();
+  const searchUserId = new URLSearchParams(location.search).get("user")?.trim() ?? "";
+
+  return searchUserId || stateUserId || null;
+}
+
 export default function Chat() {
   const location = useLocation();
   const { session } = useAuth();
@@ -189,9 +196,13 @@ export default function Chat() {
   const [loadingReports, setLoadingReports] = useState(true);
   const [sendingReply, setSendingReply] = useState(false);
   const [updatingReportId, setUpdatingReportId] = useState<string | null>(null);
+  const requestedUserId = useMemo(
+    () => getRequestedUserIdFromLocation(location),
+    [location.key, location.search, location.state],
+  );
 
   const requestedUserIdRef = useRef<string | null>(
-    ((location.state as ChatLocationState | null)?.selectedUserId) ?? null,
+    requestedUserId,
   );
   const selectedSupportUserIdRef = useRef<string | null>(null);
   const hasLoadedSupportInboxRef = useRef(false);
@@ -201,6 +212,27 @@ export default function Chat() {
   useEffect(() => {
     selectedSupportUserIdRef.current = selectedSupportUserId;
   }, [selectedSupportUserId]);
+
+  useEffect(() => {
+    requestedUserIdRef.current = requestedUserId;
+
+    if (!requestedUserId) {
+      return;
+    }
+
+    setSelectedSupportUserId(requestedUserId);
+
+    void loadParticipantIdentities(
+      supabase,
+      [requestedUserId, adminId ?? ""].filter(Boolean),
+    ).then((identities) => {
+      if (identities.size === 0) {
+        return;
+      }
+
+      setParticipantIdentities((current) => mergeIdentityMap(current, identities));
+    });
+  }, [adminId, requestedUserId]);
 
   async function loadSupportInbox(options?: { background?: boolean }) {
     if (!adminId) return;
@@ -279,7 +311,7 @@ export default function Chat() {
     const currentSelectedUserId = selectedSupportUserIdRef.current;
     const requestedUserId = requestedUserIdRef.current;
 
-    if (requestedUserId && nextConversations.some((conversation) => conversation.userId === requestedUserId)) {
+    if (requestedUserId) {
       requestedUserIdRef.current = null;
 
       if (currentSelectedUserId !== requestedUserId) {
@@ -288,14 +320,6 @@ export default function Chat() {
       return;
     }
 
-    if (!currentSelectedUserId && nextConversations[0]) {
-      setSelectedSupportUserId(nextConversations[0].userId);
-      return;
-    }
-
-    if (currentSelectedUserId && !nextConversations.some((conversation) => conversation.userId === currentSelectedUserId)) {
-      setSelectedSupportUserId(nextConversations[0]?.userId ?? null);
-    }
   }
 
   async function loadSupportThread(userId: string, options?: { background?: boolean }) {
@@ -510,6 +534,10 @@ export default function Chat() {
     () => supportConversations.find((conversation) => conversation.userId === selectedSupportUserId) ?? null,
     [selectedSupportUserId, supportConversations],
   );
+  const selectedSupportIdentity = useMemo(
+    () => (selectedSupportUserId ? buildParticipantIdentity(selectedSupportUserId, participantIdentities) : null),
+    [participantIdentities, selectedSupportUserId],
+  );
 
   const selectedReport = useMemo(
     () => reportsQueue.find((report) => report.id === selectedReportId) ?? null,
@@ -535,13 +563,13 @@ export default function Chat() {
         </TabsList>
 
         <TabsContent className="space-y-6" value="support">
-          <div className="grid h-[calc(100vh-14rem)] grid-cols-1 gap-6 lg:grid-cols-3">
-            <Card className="overflow-hidden lg:col-span-1">
+          <div className="grid h-[calc(100vh-14rem)] min-h-0 grid-cols-1 gap-6 lg:grid-cols-3">
+            <Card className="min-h-0 overflow-hidden lg:col-span-1">
               <CardHeader className="border-b border-border pb-3">
                 <CardTitle className="text-sm">Atendimentos privados</CardTitle>
               </CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-[500px]">
+              <CardContent className="min-h-0 p-0">
+                <ScrollArea className="h-[500px] lg:h-[calc(100vh-18.5rem)]">
                   {loadingSupportInbox ? (
                     <p className="p-4 text-sm text-muted-foreground">Carregando atendimentos...</p>
                   ) : supportConversations.length === 0 ? (
@@ -580,14 +608,18 @@ export default function Chat() {
               </CardContent>
             </Card>
 
-            <Card className="flex flex-col overflow-hidden lg:col-span-2">
+            <Card className="flex min-h-0 flex-col overflow-hidden lg:col-span-2">
               <CardHeader className="border-b border-border pb-3">
                 <CardTitle className="text-sm">
-                  {selectedSupportConversation ? (
+                  {selectedSupportUserId ? (
                     <div>
-                      <p className="text-sm font-semibold">Conversa com {selectedSupportConversation.userName}</p>
+                      <p className="text-sm font-semibold">
+                        Conversa com {selectedSupportConversation?.userName ?? selectedSupportIdentity?.name ?? "Participante"}
+                      </p>
                       <p className="text-xs font-normal text-muted-foreground">
-                        Atendimento privado da operacao
+                        {selectedSupportConversation
+                          ? "Atendimento privado da operacao"
+                          : "Atendimento aberto a partir da selecao do participante"}
                       </p>
                     </div>
                   ) : (
@@ -595,52 +627,54 @@ export default function Chat() {
                   )}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="flex flex-1 flex-col p-0">
-                <ScrollArea className="flex-1 p-4">
-                  {!selectedSupportConversation ? (
-                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                      <div className="space-y-2 text-center">
-                        <MessageCircle className="mx-auto h-8 w-8" />
-                        <p>Escolha um atendimento para responder.</p>
+              <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+                <div className="min-h-0 flex-1">
+                  <ScrollArea className="h-full p-4">
+                    {!selectedSupportUserId ? (
+                      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                        <div className="space-y-2 text-center">
+                          <MessageCircle className="mx-auto h-8 w-8" />
+                          <p>Escolha um atendimento para responder.</p>
+                        </div>
                       </div>
-                    </div>
-                  ) : loadingSupportThread ? (
-                    <p className="text-sm text-muted-foreground">Carregando mensagens...</p>
-                  ) : supportMessages.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nenhuma mensagem neste atendimento.</p>
-                  ) : (
-                    supportMessages.map((message) => {
-                      const isAdminMessage = message.senderId === adminId;
-                      const identity = isAdminMessage
-                        ? { avatarUrl: null, name: "Equipe" }
-                        : buildParticipantIdentity(message.senderId, participantIdentities);
+                    ) : loadingSupportThread ? (
+                      <p className="text-sm text-muted-foreground">Carregando mensagens...</p>
+                    ) : supportMessages.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">Nenhuma mensagem neste atendimento ainda.</p>
+                    ) : (
+                      supportMessages.map((message) => {
+                        const isAdminMessage = message.senderId === adminId;
+                        const identity = isAdminMessage
+                          ? { avatarUrl: null, name: "Equipe" }
+                          : buildParticipantIdentity(message.senderId, participantIdentities);
 
-                      return (
-                        <div
-                          className={`mb-4 flex ${isAdminMessage ? "justify-end" : "justify-start"}`}
-                          key={message.id}
-                        >
-                          <div className={`flex max-w-[78%] flex-col ${isAdminMessage ? "items-end" : "items-start"}`}>
-                            <div
-                              className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
-                                isAdminMessage
-                                  ? "bg-primary text-primary-foreground"
-                                  : "border border-border/60 bg-muted/45 text-foreground"
-                              }`}
-                            >
-                              <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-medium opacity-80">
-                                <span>{identity.name}</span>
-                                <span>{formatMessageTime(message.createdAt)}</span>
+                        return (
+                          <div
+                            className={`mb-4 flex ${isAdminMessage ? "justify-end" : "justify-start"}`}
+                            key={message.id}
+                          >
+                            <div className={`flex max-w-[78%] flex-col ${isAdminMessage ? "items-end" : "items-start"}`}>
+                              <div
+                                className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
+                                  isAdminMessage
+                                    ? "bg-primary text-primary-foreground"
+                                    : "border border-border/60 bg-muted/45 text-foreground"
+                                }`}
+                              >
+                                <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-medium opacity-80">
+                                  <span>{identity.name}</span>
+                                  <span>{formatMessageTime(message.createdAt)}</span>
+                                </div>
+                                <p className="whitespace-pre-wrap">{message.body}</p>
                               </div>
-                              <p className="whitespace-pre-wrap">{message.body}</p>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </ScrollArea>
-                {selectedSupportConversation ? (
+                        );
+                      })
+                    )}
+                  </ScrollArea>
+                </div>
+                {selectedSupportUserId ? (
                   <div className="border-t border-border p-4">
                     <div className="flex gap-2">
                       <Input

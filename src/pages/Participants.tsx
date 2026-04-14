@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import PageHeader from "@/components/PageHeader";
@@ -60,6 +61,11 @@ type ControlFormState = {
   public_chat_blocked: boolean;
 };
 
+type PresenceSnapshot = {
+  lastActivityByUserId: Map<string, string>;
+  onlineUserIds: Set<string>;
+};
+
 function getAgeLabel(birthDate?: string | null) {
   if (!birthDate) {
     return "Nao informado";
@@ -99,6 +105,50 @@ function formatMoment(value?: string | null, fallback = "Nao informado") {
   return format(date, "dd/MM/yyyy HH:mm", { locale: ptBR });
 }
 
+function formatLastActivity(value?: string | null) {
+  return formatMoment(value, "Nao observado");
+}
+
+function extractPresenceSnapshot(rawState: Record<string, unknown>): PresenceSnapshot {
+  const onlineUserIds = new Set<string>();
+  const lastActivityByUserId = new Map<string, string>();
+
+  Object.entries(rawState).forEach(([presenceKey, entries]) => {
+    if (presenceKey) {
+      onlineUserIds.add(presenceKey);
+    }
+
+    if (!Array.isArray(entries)) {
+      return;
+    }
+
+    entries.forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+
+      const userId = "userId" in entry && typeof entry.userId === "string" ? entry.userId : null;
+      const updatedAt = "updatedAt" in entry && typeof entry.updatedAt === "string" ? entry.updatedAt : null;
+
+      if (userId) {
+        onlineUserIds.add(userId);
+      }
+
+      if (!userId || !updatedAt) {
+        return;
+      }
+
+      const currentValue = lastActivityByUserId.get(userId);
+
+      if (!currentValue || new Date(updatedAt).getTime() > new Date(currentValue).getTime()) {
+        lastActivityByUserId.set(userId, updatedAt);
+      }
+    });
+  });
+
+  return { lastActivityByUserId, onlineUserIds };
+}
+
 function createProfileForm(profile?: ProfileRecord | null): ProfileFormState {
   return {
     birth_date: profile?.birth_date ?? "",
@@ -119,10 +169,13 @@ function createControlForm(control?: ParticipantControlRecord | null): ControlFo
 
 export default function Participants() {
   const { session } = useAuth();
+  const navigate = useNavigate();
   const [participants, setParticipants] = useState<ProfileRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [participantControls, setParticipantControls] = useState<ParticipantControlRecord[]>([]);
   const [reports, setReports] = useState<ChatReportSummary[]>([]);
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
+  const [lastActivityByUserId, setLastActivityByUserId] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [selectedParticipantKey, setSelectedParticipantKey] = useState<string | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileFormState>(createProfileForm());
@@ -161,6 +214,44 @@ export default function Participants() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    let isActive = true;
+    const channel = supabase.channel("participants-presence");
+
+    const syncPresence = () => {
+      if (!isActive) {
+        return;
+      }
+
+      const presenceState = channel.presenceState() as Record<string, unknown>;
+      const snapshot = extractPresenceSnapshot(presenceState);
+
+      setOnlineUserIds(snapshot.onlineUserIds);
+      setLastActivityByUserId((current) => {
+        const next = new Map(current);
+        snapshot.lastActivityByUserId.forEach((updatedAt, userId) => {
+          next.set(userId, updatedAt);
+        });
+        return next;
+      });
+    };
+
+    channel
+      .on("presence", { event: "sync" }, syncPresence)
+      .on("presence", { event: "join" }, syncPresence)
+      .on("presence", { event: "leave" }, syncPresence)
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          syncPresence();
+        }
+      });
+
+    return () => {
+      isActive = false;
+      void supabase.removeChannel(channel);
+    };
+  }, []);
 
   const latestPaymentByUserId = useMemo(() => {
     const map = new Map<string, PaymentRecord>();
@@ -233,6 +324,19 @@ export default function Participants() {
     setControlForm(createControlForm(selectedControl));
   }, [selectedControl, selectedParticipant]);
 
+  const handleOpenChat = useCallback(
+    (userId?: string | null) => {
+      if (!userId) {
+        toast.error("Esse participante ainda nao possui um usuario valido para abrir o chat.");
+        return;
+      }
+
+      setSelectedParticipantKey(null);
+      navigate(`/chat?user=${encodeURIComponent(userId)}`, { state: { selectedUserId: userId } });
+    },
+    [navigate],
+  );
+
   async function handleSaveProfile() {
     if (!selectedParticipant || !selectedParticipantUserId || savingProfile) return;
 
@@ -296,24 +400,27 @@ export default function Participants() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nome</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>CPF</TableHead>
                 <TableHead>Idade</TableHead>
                 <TableHead>Checkout</TableHead>
                 <TableHead>Chat publico</TableHead>
                 <TableHead>Ultimo Pagamento</TableHead>
+                <TableHead>Ultima atividade</TableHead>
                 <TableHead>Cadastro</TableHead>
+                <TableHead className="text-right">Acoes</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={7}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={10}>
                     Carregando...
                   </TableCell>
                 </TableRow>
               ) : participants.length === 0 ? (
                 <TableRow>
-                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={7}>
+                  <TableCell className="py-8 text-center text-muted-foreground" colSpan={10}>
                     Nenhum participante
                   </TableCell>
                 </TableRow>
@@ -322,6 +429,8 @@ export default function Participants() {
                   const userId = participant.user_id ?? participant.id ?? "";
                   const payment = latestPaymentByUserId.get(userId);
                   const control = controlsByUserId.get(userId);
+                  const isOnline = onlineUserIds.has(userId);
+                  const lastActivity = lastActivityByUserId.get(userId) ?? null;
 
                   return (
                     <TableRow
@@ -331,6 +440,15 @@ export default function Participants() {
                     >
                       <TableCell className="font-medium">
                         {getProfileDisplayName(participant, userId)}
+                      </TableCell>
+                      <TableCell>
+                        <span
+                          className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${
+                            isOnline ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {isOnline ? "Online" : "Offline"}
+                        </span>
                       </TableCell>
                       <TableCell className="text-muted-foreground">{formatCpf(participant.cpf)}</TableCell>
                       <TableCell className="text-muted-foreground">{getAgeLabel(participant.birth_date)}</TableCell>
@@ -356,9 +474,24 @@ export default function Participants() {
                         <StatusBadge status={normalizePaymentStatus(payment?.status)} />
                       </TableCell>
                       <TableCell className="text-muted-foreground">
+                        {formatLastActivity(lastActivity)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
                         {format(new Date(participant.created_at ?? new Date().toISOString()), "dd/MM/yyyy", {
                           locale: ptBR,
                         })}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleOpenChat(userId);
+                          }}
+                          size="sm"
+                          variant="outline"
+                        >
+                          Chat
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );
@@ -374,10 +507,17 @@ export default function Participants() {
           {selectedParticipant ? (
             <div className="flex max-h-[92vh] flex-col">
               <DialogHeader className="border-b border-border px-6 py-5">
-                <DialogTitle>{getProfileDisplayName(selectedParticipant, selectedParticipantUserId ?? undefined)}</DialogTitle>
-                <DialogDescription>
-                  Painel completo do participante com cadastro, historico e controles operacionais.
-                </DialogDescription>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <DialogTitle>{getProfileDisplayName(selectedParticipant, selectedParticipantUserId ?? undefined)}</DialogTitle>
+                    <DialogDescription>
+                      Painel completo do participante com cadastro, historico e controles operacionais.
+                    </DialogDescription>
+                  </div>
+                  <Button onClick={() => handleOpenChat(selectedParticipantUserId)} size="sm" variant="outline">
+                    Chat
+                  </Button>
+                </div>
               </DialogHeader>
 
               <div className="space-y-6 overflow-y-auto px-6 py-5">
@@ -550,6 +690,16 @@ export default function Participants() {
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-muted-foreground">Checkout</span>
                           <span>{controlForm.checkout_blocked ? "Bloqueado" : "Liberado"}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Status</span>
+                          <span>
+                            {selectedParticipantUserId && onlineUserIds.has(selectedParticipantUserId) ? "Online" : "Offline"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Ultima atividade</span>
+                          <span>{formatLastActivity(selectedParticipantUserId ? lastActivityByUserId.get(selectedParticipantUserId) ?? null : null)}</span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-muted-foreground">Chat publico</span>

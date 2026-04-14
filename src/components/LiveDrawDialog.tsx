@@ -112,6 +112,22 @@ function summarizePromotionTitles(promotions: PromotionRecord[]) {
   return `${titles.slice(0, 2).join(", ")} +${titles.length - 2}`;
 }
 
+function formatWinnerAnnouncement(result: DrawExecutionResult | null) {
+  if (!result) {
+    return "Aguardando a confirmacao oficial da Loteria Federal.";
+  }
+
+  if (!result.winnerTickets.length) {
+    return "Nao houve ganhador em cheio nesta rodada. Vamos revelar o numero participante mais proximo.";
+  }
+
+  if (result.winnerSelectionMode === "closest") {
+    return `${result.winnerTickets[0].displayName} ficou com o numero ${result.winnerTickets[0].ticketCode}, o mais proximo do oficial ${result.officialWinningCode}.`;
+  }
+
+  return `${result.winnerTickets[0].displayName} ficou com o numero ${result.winnerTickets[0].ticketCode}.`;
+}
+
 export default function LiveDrawDialog({
   contestCode,
   draw,
@@ -249,30 +265,37 @@ export default function LiveDrawDialog({
   const financials = result ?? previewFinancials;
   const headline =
     stage === "idle"
-      ? "Cena pronta para a Loteria Federal"
+      ? "Tudo pronto para a grande revelacao"
       : stage === "countdown"
         ? revealMode === "closest"
-          ? "Buscando o numero mais proximo"
-          : "Resultado oficial travado"
+          ? "Agora vamos ao numero mais proximo"
+          : "Contagem para revelar o numero da rodada"
         : stage === "rolling"
           ? revealMode === "closest"
-            ? "Localizando o ganhador mais proximo"
-            : "Revelando os 4 ultimos digitos"
-          : "Resultado oficial confirmado";
+            ? "Descobrindo o numero mais proximo"
+            : "Revelando o numero vencedor"
+          : result?.winnerTickets.length
+            ? result.winnerSelectionMode === "closest"
+              ? "Temos o numero mais proximo confirmado"
+              : "Temos um ganhador!"
+            : "Resultado oficial confirmado";
   const supportingText =
     stage === "idle"
-      ? "Consulte a Federal no botao abaixo, confira o concurso na cena e so depois confirme o resultado oficial."
+      ? "Consulte o resultado oficial, confirme os dados e prepare a cena para revelar quem leva esta rodada."
       : stage === "countdown"
         ? revealMode === "closest"
-          ? "Nao houve ganhador exato. A cena vai rodar novamente para encontrar o numero vendido mais proximo."
-          : "O resultado ja foi salvo. Agora a live so precisa revelar o numero vencedor."
+          ? "Nao tivemos um numero em cheio. A contagem vai voltar para revelar o numero participante mais proximo."
+          : "Tudo certo por aqui. Agora a live vai revelar o numero oficial desta rodada."
         : stage === "rolling"
           ? revealMode === "closest"
-            ? "A cena esta buscando o numero vendido mais proximo do resultado oficial."
-            : "A cena esta convertendo o 1o premio da Federal no numero oficial do sorteio."
-          : result?.winnerSelectionMode === "closest"
-            ? "O sorteio foi consolidado com o numero oficial e o ganhador mais proximo foi salvo no snapshot desta rodada."
-            : "O sorteio foi consolidado com o numero oficial e o snapshot completo dos numeros vendidos.";
+            ? "A cena esta procurando quem ficou mais perto do numero oficial."
+            : "Os 4 ultimos digitos do primeiro premio estao sendo convertidos no numero da rodada."
+          : result?.winnerTickets.length
+            ? result.winnerSelectionMode === "closest"
+              ? "Nao houve numero exato, mas ja temos o participante que ficou mais perto e levou a rodada."
+              : "O numero oficial bateu em cheio e o ganhador ja esta confirmado."
+            : "O numero oficial foi confirmado, mas ainda nao tivemos um numero em cheio.";
+  const winnerAnnouncement = formatWinnerAnnouncement(result);
 
   const canStart =
     tickets.length > 0 &&
@@ -328,7 +351,7 @@ export default function LiveDrawDialog({
     }
 
     if (deriveFederalWinningNumber(firstPrizeInput) === null) {
-      toast.error("Informe o 1o premio oficial com pelo menos 4 digitos.");
+      toast.error("Informe o primeiro premio oficial com pelo 4 digitos.");
       return;
     }
 
@@ -352,7 +375,7 @@ export default function LiveDrawDialog({
       });
 
       if (!response.ok) {
-        throw new Error(`A Caixa respondeu ${response.status} ao consultar o resultado oficial.`);
+        throw new Error(`A Loteria respondeu ${response.status} ao consultar o resultado oficial.`);
       }
 
       const payload = (await response.json().catch(() => null)) as FederalApiResponse | null;
@@ -360,7 +383,7 @@ export default function LiveDrawDialog({
       const firstPrizeNumber = normalizeFirstPrizeNumber(payload);
 
       if (!federalContest || !firstPrizeNumber) {
-        throw new Error("A API da Federal retornou um payload incompleto.");
+        throw new Error("A API da Loteria retornou um payload incompleto.");
       }
 
       const latestResult: FederalLatestResult = {
@@ -377,8 +400,8 @@ export default function LiveDrawDialog({
     } catch (error) {
       setFederalResultError(
         error instanceof Error
-          ? `${error.message} Se a consulta no navegador falhar, confirme concurso e 1o premio manualmente na cena.`
-          : "Nao foi possivel consultar a API da Federal no backoffice. Confirme concurso e 1o premio manualmente na cena.",
+          ? `${error.message} Se a consulta no navegador falhar, confirme concurso e primeiro premio manualmente na cena.`
+          : "Nao foi possivel consultar a API da loteria no backoffice. Confirme concurso e primeiro premio manualmente na cena.",
       );
     } finally {
       setIsLoadingFederalResult(false);
@@ -431,7 +454,7 @@ export default function LiveDrawDialog({
                       <p className="text-xs uppercase tracking-[0.3em] text-white/45">Concurso</p>
                       <p className="mt-2 max-w-[24rem] break-all text-lg font-semibold">{formatContestLabel(contestCode)}</p>
                       <p className="mt-2 text-xs text-white/55">
-                        {promotions.length ? `${promotions.length} promocao(oes)` : "Nenhuma promocao vinculada"}
+                        {promotions.length ? `${promotions.length} promocao(oes) nesta rodada` : "Rodada sem promocao vinculada"}
                       </p>
                     </div>
                   </div>
@@ -459,12 +482,12 @@ export default function LiveDrawDialog({
                       {formatContestLabel(contestCode)}
                     </h3>
                     <p className="mt-2 text-sm text-white/55">
-                      {promotionSummary || "As promocoes vinculadas a este concurso aparecem aqui."}
+                      {promotionSummary || "Os itens desta rodada aparecem aqui para a transmissao."}
                     </p>
                   </div>
 
                   <div className="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-amber-100">
-                    <p className="text-xs uppercase tracking-[0.25em] text-amber-200/80">Numeros vendidos</p>
+                    <p className="text-xs uppercase tracking-[0.25em] text-amber-200/80">Numeros na rodada</p>
                     <p className="mt-1 text-2xl font-semibold">{tickets.length}</p>
                   </div>
                 </div>
@@ -498,7 +521,7 @@ export default function LiveDrawDialog({
                         )}
                       >
                         <p className="text-xs uppercase tracking-[0.3em] text-white/40">
-                          4 ultimos digitos do 1o premio
+                          Numero da rodada
                         </p>
                         <div
                           className={cn(
@@ -516,9 +539,52 @@ export default function LiveDrawDialog({
                               ? result.winnerSelectionMode === "closest"
                                 ? `${result.winnerTickets[0].displayName} ficou com o numero ${result.winnerTickets[0].ticketCode}, o mais proximo do oficial ${result.officialWinningCode}.`
                                 : `${result.winnerTickets[0].displayName} ficou com o numero ${result.winnerTickets[0].ticketCode}.`
-                              : "Nenhum numero vendido correspondeu ao resultado oficial. Use a busca do mais proximo para continuar."
+                              : "Não houve ganhador em cheio,vamos para aquele que mais se aproximou."
                             : "Aguardando a confirmacao oficial da Loteria Federal."}
                         </p>
+                        {stage === "revealed" && result ? (
+                          result.winnerTickets.length ? (
+                            <div
+                              className={cn(
+                                "rounded-[1.6rem] border px-5 py-5 text-left shadow-[0_0_45px_rgba(245,158,11,0.18)]",
+                                result.winnerSelectionMode === "closest"
+                                  ? "border-sky-300/30 bg-[linear-gradient(135deg,rgba(14,165,233,0.18),rgba(15,23,42,0.84))]"
+                                  : "border-amber-300/35 bg-[linear-gradient(135deg,rgba(245,158,11,0.24),rgba(15,23,42,0.86))]",
+                              )}
+                            >
+                              <div className="flex items-start gap-4">
+                                <div
+                                  className={cn(
+                                    "flex h-14 w-14 items-center justify-center rounded-2xl border shadow-[0_0_24px_rgba(255,255,255,0.08)]",
+                                    result.winnerSelectionMode === "closest"
+                                      ? "border-sky-200/30 bg-sky-300/15 text-sky-100"
+                                      : "border-amber-200/30 bg-amber-300/15 text-amber-100",
+                                  )}
+                                >
+                                  <Trophy className="h-7 w-7" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs uppercase tracking-[0.32em] text-white/70">
+                                    {result.winnerSelectionMode === "closest" ? "Numero mais proximo confirmado" : "Temos ganhador"}
+                                  </p>
+                                  <p className="mt-2 text-2xl font-semibold text-white">{result.winnerTickets[0].displayName}</p>
+                                  <p className="mt-2 text-sm text-white/80">
+                                    Numero premiado: <span className="font-semibold text-white">#{result.winnerTickets[0].ticketCode}</span>
+                                  </p>
+                                  <p className="mt-3 text-sm text-white/70">{winnerAnnouncement}</p>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="rounded-[1.6rem] border border-rose-300/25 bg-[linear-gradient(135deg,rgba(251,113,133,0.12),rgba(15,23,42,0.86))] px-5 py-5 text-left shadow-[0_0_35px_rgba(251,113,133,0.12)]">
+                              <p className="text-xs uppercase tracking-[0.32em] text-rose-100/75">Sem ganhador em cheio</p>
+                              <p className="mt-2 text-xl font-semibold text-white">Ninguem acertou exatamente o numero da rodada.</p>
+                              <p className="mt-3 text-sm text-white/75">
+                                Se quiser continuar a revelacao na live, use o botao ao lado para descobrir o numero participante mais proximo.
+                              </p>
+                            </div>
+                          )
+                        ) : null}
                       </div>
                     )}
 
@@ -550,7 +616,7 @@ export default function LiveDrawDialog({
                     )}
                   >
                     <div className="space-y-2">
-                      <Label className="text-xs uppercase tracking-[0.28em] text-white/55">Concurso da Federal</Label>
+                      <Label className="text-xs uppercase tracking-[0.28em] text-white/55">Concurso oficial</Label>
                       <Input
                         disabled={Boolean(result) || isExecuting}
                         onChange={(event) => setFederalContestInput(event.target.value)}
@@ -560,7 +626,7 @@ export default function LiveDrawDialog({
                     </div>
 
                     <div className="space-y-2">
-                      <Label className="text-xs uppercase tracking-[0.28em] text-white/55">1o premio oficial</Label>
+                      <Label className="text-xs uppercase tracking-[0.28em] text-white/55">Primeiro premio oficial</Label>
                       <Input
                         disabled={Boolean(result) || isExecuting}
                         onChange={(event) => setFirstPrizeInput(event.target.value)}
@@ -570,8 +636,7 @@ export default function LiveDrawDialog({
                     </div>
 
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-white/70">
-                      O botao abaixo apenas consulta a API da Federal e preenche a cena. O sorteio so sera salvo no
-                      Supabase depois da sua confirmacao manual.
+                      Use o botao abaixo para trazer o resultado oficial e preparar a cena. A confirmacao final continua sendo feita manualmente.
                     </div>
 
                     <Button
@@ -582,17 +647,17 @@ export default function LiveDrawDialog({
                       variant="outline"
                     >
                       {isLoadingFederalResult ? <Loader2 className="animate-spin" /> : null}
-                      {isLoadingFederalResult ? "Consultando Federal..." : "Consultar API da Federal"}
+                      {isLoadingFederalResult ? "Consultando Loteria..." : "Consultar API da Loteria"}
                     </Button>
 
                     {latestFederalResult ? (
                       <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100/90">
                         <p className="font-medium">
-                          Ultimo resultado oficial: concurso {latestFederalResult.federalContest} • 1o premio{" "}
+                          Ultimo resultado encontrado: concurso {latestFederalResult.federalContest} • primeiro premio{" "}
                           {latestFederalResult.firstPrizeNumber}
                         </p>
                         <p className="mt-2 text-emerald-100/75">
-                          Numero vencedor derivado: {latestFederalResult.officialWinningCode}
+                          Numero da rodada: {latestFederalResult.officialWinningCode}
                           {latestFederalResult.dataApuracao ? ` • apurado em ${latestFederalResult.dataApuracao}` : ""}
                         </p>
                       </div>
@@ -613,11 +678,11 @@ export default function LiveDrawDialog({
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                        <p className="text-xs uppercase tracking-[0.3em] text-white/45">Participantes</p>
+                        <p className="text-xs uppercase tracking-[0.3em] text-white/45">Pessoas participando</p>
                         <p className="mt-2 text-xl font-semibold">{buyersCount}</p>
                       </div>
                       <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                        <p className="text-xs uppercase tracking-[0.3em] text-white/45">Promocoes no concurso</p>
+                        <p className="text-xs uppercase tracking-[0.3em] text-white/45">Promocoes na rodada</p>
                         <p className="mt-2 text-xl font-semibold">{promotions.length}</p>
                       </div>
                     </div>
@@ -626,19 +691,19 @@ export default function LiveDrawDialog({
 
                 <div className={cn("mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4", isFullscreen ? "xl:mt-auto" : "")}>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Montante</p>
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Arrecadacao da rodada</p>
                     <p className="mt-2 text-xl font-semibold">{formatCurrency(financials.totalPot)}</p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Plataforma 20%</p>
-                    <p className="mt-2 text-xl font-semibold">{formatCurrency(financials.platformCut)}</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Premio previsto</p>
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Premio da rodada</p>
                     <p className="mt-2 text-xl font-semibold">{formatCurrency(financials.prizePool)}</p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Numero oficial</p>
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Pessoas confirmadas</p>
+                    <p className="mt-2 text-xl font-semibold">{buyersCount}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/45">Numero da sorte</p>
                     <p className="mt-2 text-xl font-semibold">
                       {result ? result.officialWinningCode : formatTicketNumber(0)}
                     </p>
@@ -657,9 +722,9 @@ export default function LiveDrawDialog({
                     <Ticket className="h-5 w-5" />
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold">Pool oficial de numeros</h3>
+                    <h3 className="text-lg font-semibold">Numeros participantes</h3>
                     <p className="text-sm text-white/55">
-                      Snapshot dos numeros liberados para este concurso.
+                      Todos os numeros confirmados que estao valendo nesta rodada.
                     </p>
                   </div>
                 </div>
@@ -668,7 +733,7 @@ export default function LiveDrawDialog({
                   <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
                     <div className="flex items-center gap-2 text-sm text-white/70">
                       <Calendar className="h-4 w-4 text-sky-300" />
-                      <span>Data do sorteio</span>
+                      <span>Dia da revelacao</span>
                     </div>
                     <p className="mt-3 text-lg font-semibold">
                       {draw?.draw_date
@@ -680,9 +745,9 @@ export default function LiveDrawDialog({
                   <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
                     <div className="flex items-center gap-2 text-sm text-white/70">
                       <Hash className="h-4 w-4 text-amber-300" />
-                      <span>Regra oficial</span>
+                      <span>Como o numero e definido</span>
                     </div>
-                    <p className="mt-3 text-lg font-semibold">4 ultimos digitos do 1o premio</p>
+                    <p className="mt-3 text-lg font-semibold">Usamos os 4 ultimos digitos do primeiro premio</p>
                   </div>
                 </div>
 
@@ -709,12 +774,15 @@ export default function LiveDrawDialog({
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="font-medium">{ticket.displayName}</p>
-                                <p className="text-sm text-white/55">
-                                  {ticket.cpf ?? "CPF pendente"} • {ticket.email ?? "email oculto"}
+                                <p className="hidden text-sm text-white/55">
+                                  Dados internos ocultos na transmissao
                                 </p>
+                                <p className="text-sm text-white/55">{isWinner ? "Destaque da rodada" : "Participante confirmado"}</p>
                               </div>
                               <div className="text-right">
-                                <p className="text-xs uppercase tracking-[0.3em] text-white/40">Numero</p>
+                                <p className="text-xs uppercase tracking-[0.3em] text-white/40">
+                                  {isWinner ? "Numero premiado" : "Numero"}
+                                </p>
                                 <p className="text-lg font-semibold">#{ticket.ticketCode}</p>
                               </div>
                             </div>
@@ -756,14 +824,14 @@ export default function LiveDrawDialog({
                   <div className="mt-4 rounded-[1.5rem] border border-emerald-400/20 bg-emerald-400/10 p-4">
                     <div className="flex items-center gap-2 text-emerald-200">
                       <Trophy className="h-4 w-4" />
-                      <span className="text-sm font-medium">Resultado persistido</span>
+                      <span className="text-sm font-medium">Resultado da rodada salvo</span>
                     </div>
                     <p className="mt-2 text-sm text-emerald-100/90">
                       {result.winnerTickets.length
                         ? result.winnerSelectionMode === "closest"
-                          ? `O numero oficial ${result.officialWinningCode} foi confirmado e o ganhador mais proximo ja esta salvo no banco.`
-                          : `O numero ${result.officialWinningCode} foi confirmado e o ganhador exato ja esta salvo no banco.`
-                        : `O numero ${result.officialWinningCode} foi confirmado, mas esta rodada ficou sem ganhador exato.`}
+                          ? `O numero oficial ${result.officialWinningCode} foi confirmado e o participante mais proximo ja esta salvo.`
+                          : `O numero ${result.officialWinningCode} foi confirmado e o ganhador desta rodada ja esta salvo.`
+                        : `O numero ${result.officialWinningCode} foi confirmado, mas esta rodada terminou sem numero em cheio.`}
                     </p>
                   </div>
                 ) : null}
